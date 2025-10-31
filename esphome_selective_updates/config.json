@@ -1,0 +1,66 @@
+{
+  "name": "ESPHome Selective Updates",
+  "version": "2.0.0",
+  "slug": "esphome_selective_updates",
+  "description": "Smart bulk updates for ESPHome devices - only updates devices that need it, with resume capability",
+  "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
+  "startup": "application",
+  "boot": "manual",
+  "init": false,
+
+  "homeassistant_api": true,
+  "hassio_api": true,
+  "hassio_role": "manager",
+
+  "host_network": true,
+  "docker_api": true,
+
+  "apparmor": false,
+
+  "privileged": ["SYS_ADMIN"],
+
+  "map": ["config:rw", "data:rw"],
+
+  "options": {
+    "ota_password": "",
+    "delay_between_updates": 3,
+    "esphome_container": "addon_15ef4d2f_esphome",
+    "skip_offline": true,
+
+    "dry_run": false,
+    "max_devices_per_run": 0,
+    "start_from_device": "",
+    "update_only_these": [],
+
+    "clear_log_on_start": false,
+    "clear_log_on_version_change": true,
+    "clear_log_now": false,
+
+    "clear_progress_on_start": false,
+    "clear_progress_now": false
+  },
+
+  "schema": {
+    "ota_password": "str",
+    "delay_between_updates": "int(1,60)",
+    "esphome_container": "str",
+    "skip_offline": "bool",
+
+    "dry_run": "bool",
+    "max_devices_per_run": "int(0,500)",
+    "start_from_device": "str?",
+    "update_only_these": ["str?"],
+
+    "clear_log_on_start": "bool",
+    "clear_log_on_version_change": "bool",
+    "clear_log_now": "bool",
+
+    "clear_progress_on_start": "bool",
+    "clear_progress_now": "bool"
+  },
+
+  "ports": {},
+  "ports_description": {},
+
+  "url": "https://github.com/CSJudd/ha-addons/tree/master/esphome_selective_updates"
+}

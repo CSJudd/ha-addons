@@ -286,6 +286,8 @@ def _run(
     if STOP_REQUESTED:
         return (143, "")
     
+    out = ""  # Initialize out variable
+    
     try:
         if capture:
             p = subprocess.Popen(

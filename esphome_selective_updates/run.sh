@@ -131,7 +131,7 @@ log_info "✓ ESPHome container found and accessible"
 log_info ""
 log_info "Detecting ESPHome version..."
 
-ESPHOME_VERSION=$(docker exec "${ESPHOME_CONTAINER}" esphome version 2>/dev/null | grep -oP 'ESPHome \K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+ESPHOME_VERSION=$(docker exec "${ESPHOME_CONTAINER}" esphome version 2>/dev/null | grep -o 'ESPHome [0-9][0-9.]*' | cut -d' ' -f2 || echo "unknown")
 log_info "✓ ESPHome version: ${ESPHOME_VERSION}"
 
 # ============================================================================

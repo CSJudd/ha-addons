@@ -4,7 +4,7 @@ Production-ready add-ons for Home Assistant.
 
 ## Add-ons in this repository
 
-- **ESPHome Smart Updater** - Automatically update all ESPHome devices intelligently
+- **ESPHome Selective Updates** - Automatically update all ESPHome devices intelligently
 
 ## Installation
 

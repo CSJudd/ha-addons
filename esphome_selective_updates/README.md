@@ -111,7 +111,7 @@ Yes, because this add-on:
 
 1. Open **Settings → Add-ons → Add-on Store**
 2. Click **⋮ → Repositories**
-3. Add: `https://github.com/CSJudd/ha-addons-dev.git`
+3. Add: `https://github.com/CSJudd/ha-addons.git`
 4. Click **Add**, then **Close**, then **Reload**
 
 ### Step 2 – Install the Add-on

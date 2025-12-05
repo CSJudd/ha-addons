@@ -355,7 +355,7 @@ def get_current_esphome_version(container: str) -> str:
     """Get ESPHome version from container"""
     rc, out = docker_exec(container, ["esphome", "version"], capture=True)
     if rc == 0:
-        m = re.search(r"ESPHome\s+([0-9][^\s]*)", out)
+        m = re.search(r"(?:ESPHome|Version:)\s+([0-9][^\s]*)", out)
         if m:
             return m.group(1).strip()
     return "unknown"

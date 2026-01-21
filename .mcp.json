@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "homeassistant": {
+      "command": "python3",
+      "args": [
+        "/Users/csj/mcp-clients/homeassistant/mcp_bridge.py"
+      ],
+      "disabled": false
+    }
+  }
+}

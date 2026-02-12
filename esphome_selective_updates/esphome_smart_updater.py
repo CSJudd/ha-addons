@@ -405,7 +405,8 @@ def needs_update(device_name: str, progress: Dict) -> Tuple[bool, str]:
 def compile_in_esphome_container(
     container: str,
     yaml_name: str,
-    device_name: str
+    device_name: str,
+    node: str
 ) -> Optional[str]:
     """
     Compile firmware in ESPHome container
@@ -428,8 +429,8 @@ def compile_in_esphome_container(
     
     # Locate compiled binary
     stem = Path(yaml_name).stem
-    pio_bin = f"/data/build/{stem}*/.pioenvs/{stem}*/firmware.bin"
-    legacy = f"/config/esphome/.esphome/build/{stem}/{stem}.bin"
+    pio_bin = f"/data/build/{node}*/.pioenvs/{node}*/firmware.bin"
+    legacy = f"/config/esphome/.esphome/build/{node}/{node}.bin"
     
     dst_dir = Path("/config/esphome/builds")
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -794,7 +795,7 @@ def update_device(
     log(f"→ Starting update for {name}")
     
     # Compile
-    bin_path = compile_in_esphome_container(container, yaml_name, name)
+    bin_path = compile_in_esphome_container(container, yaml_name, name, node)
     if STOP_REQUESTED:
         log("Stop requested during compile")
         return "skipped"

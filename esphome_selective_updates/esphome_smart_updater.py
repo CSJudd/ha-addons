@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
@@ -234,11 +235,39 @@ def parse_node_name(yaml_text: str) -> Optional[str]:
     
     return None
 
+
+def parse_address(
+    text: str,
+    node: str
+) -> Optional[str]:
+    """Extract the address for the node from the YAML"""
+
+    # use_address
+    m_use_address = re.search(r"use_address:\s*(.*)", text)
+    if m_use_address:
+        address = m_use_address.group(1).strip()
+        return address
+
+    # IP address
+    m_ip = re.search(r"manual_ip\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})", text)
+    if m_ip:
+        ip = m_ip.group(1).strip()
+        return ip
+
+    # domain
+    m_domain = re.search(r"domain:\s*(.+)", text)
+    if m_domain:
+        domain = f"{node}{m_domain.group(1).strip()}"
+        return domain
+
+    return None
+
+
 # ============================================================================
 # DEVICE DISCOVERY
 # ============================================================================
 
-def discover_devices() -> List[dict]:
+def discover_devices(container: str) -> List[dict]:
     """Discover all ESPHome device configurations"""
     out = []
     
@@ -247,25 +276,24 @@ def discover_devices() -> List[dict]:
         return out
     
     for yaml_file in sorted(ESPHOME_CONFIG_DIR.glob("*.yaml")):
-        try:
-            text = yaml_file.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            text = ""
-        
-        # Extract IP address (if manually configured)
-        ip = None
-        m_ip = re.search(r"manual_ip\s*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
-        if m_ip:
-            ip = m_ip.group(1).strip()
+        # Get the complete, parsed configuration from the `esphome config` command.
+        rc, text = docker_exec(container, ["esphome", "config", yaml_file], capture=True)
+        if rc != 0:
+            log(f"✗  Validation error: {yaml_file}")
+            log(textwrap.indent(text, '    '))
+            continue
         
         # Extract node name
         node = parse_node_name(text) or yaml_file.stem
+
+        # Extract the address
+        address = parse_address(text, node)
         
         out.append({
             "name": yaml_file.stem,
             "node": node,
             "config": yaml_file.name,
-            "address": ip,
+            "address": address,
         })
     
     return out
@@ -859,7 +887,7 @@ def main():
     
     # Discover devices
     log_section("Device Discovery")
-    devices = discover_devices()
+    devices = discover_devices(esphome_container)
     total = len(devices)
     log(f"Found {total} total device configuration(s)")
     

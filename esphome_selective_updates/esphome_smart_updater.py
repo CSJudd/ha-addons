@@ -247,11 +247,15 @@ def discover_devices() -> List[dict]:
         return out
     
     for yaml_file in sorted(ESPHOME_CONFIG_DIR.glob("*.yaml")):
+        # Ignore secrets.yaml
+        if Path(yaml_file).stem == "secrets":
+            continue
+
         try:
             text = yaml_file.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             text = ""
-        
+
         # Extract IP address (if manually configured)
         ip = None
         m_ip = re.search(r"manual_ip\s*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)

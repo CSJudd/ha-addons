@@ -706,28 +706,8 @@ def compile_device_stream(instance, device_name):
                 env=env
             )
 
-            # Stream output line by line with keepalive
-            import select
-            import time
-            last_output = time.time()
-
-            while process.poll() is None:
-                # Check if data is available (non-blocking)
-                ready, _, _ = select.select([process.stdout], [], [], 0.5)
-
-                if ready:
-                    line = process.stdout.readline()
-                    if line:
-                        yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
-                        last_output = time.time()
-                else:
-                    # Send keepalive every 5 seconds to prevent timeout
-                    if time.time() - last_output > 5:
-                        yield f": keepalive\n\n"
-                        last_output = time.time()
-
-            # Read any remaining output
-            for line in process.stdout:
+            # Stream output line by line
+            for line in iter(process.stdout.readline, ''):
                 if line:
                     yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
 
@@ -840,28 +820,8 @@ def upload_device_stream(instance, device_name):
                 env=env
             )
 
-            # Stream output line by line with keepalive
-            import select
-            import time
-            last_output = time.time()
-
-            while process.poll() is None:
-                # Check if data is available (non-blocking)
-                ready, _, _ = select.select([process.stdout], [], [], 0.5)
-
-                if ready:
-                    line = process.stdout.readline()
-                    if line:
-                        yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
-                        last_output = time.time()
-                else:
-                    # Send keepalive every 5 seconds to prevent timeout
-                    if time.time() - last_output > 5:
-                        yield f": keepalive\n\n"
-                        last_output = time.time()
-
-            # Read any remaining output
-            for line in process.stdout:
+            # Stream output line by line
+            for line in iter(process.stdout.readline, ''):
                 if line:
                     yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
 

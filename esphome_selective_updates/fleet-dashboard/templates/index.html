@@ -1765,9 +1765,9 @@
                         return;
                     }
 
-                    // Open native ESPHome dashboard for this device
-                    const deviceUrl = `${baseUrl}/?dashboard_wizard=${device.config_file}`;
-                    window.open(deviceUrl, '_blank', 'width=1200,height=800');
+                    // Open native ESPHome dashboard edit page for this device
+                    const deviceUrl = `${baseUrl}/edit?configuration=${device.config_file}`;
+                    window.open(deviceUrl, '_blank', 'width=1400,height=900');
                 },
 
                 // ============================================================================

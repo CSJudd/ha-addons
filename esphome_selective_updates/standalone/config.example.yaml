@@ -1,0 +1,79 @@
+# ESPHome Selective Updates - Standalone Configuration
+# Copy this to config.yaml and adjust for your environment
+
+# ==============================================================================
+# MODE SELECTION
+# ==============================================================================
+# docker - Use local Docker daemon (for Docker-based ESPHome instances)
+# ssh    - Connect to remote builder via SSH (NOT YET IMPLEMENTED)
+# direct - Use local ESPHome CLI (for native installations)
+mode: docker
+
+# ==============================================================================
+# ESPHOME CONFIGURATION
+# ==============================================================================
+
+# Path to ESPHome device configurations (*.yaml files)
+# Codex production: /opt/data-services/esphome/production
+# Codex lab:        /opt/data-services/esphome/lab
+esphome_config_dir: /opt/data-services/esphome/production
+
+# Docker mode: Container name
+# Codex production: codex-esphome-production
+# Codex lab:        codex-esphome-lab
+esphome_container: codex-esphome-production
+
+# ==============================================================================
+# UPDATE BEHAVIOR
+# ==============================================================================
+
+# OTA password (if your devices use one)
+ota_password: ""
+
+# Skip devices that fail ping check
+skip_offline: true
+
+# Delay between device updates (seconds)
+delay_between_updates: 3
+
+# Preview mode - show what would be updated without actually updating
+dry_run: false
+
+# Limit number of devices to update per run (0 = unlimited)
+# Useful for testing or gradual rollouts
+max_devices_per_run: 0
+
+# Resume from specific device (alphabetical order)
+# Example: "mjs018" to start from that device
+start_from_device: ""
+
+# Update only specific devices (whitelist)
+# Leave empty to process all devices
+update_only_these: []
+
+# ==============================================================================
+# FILE LOCATIONS
+# ==============================================================================
+
+# Directory for state files (progress tracking)
+state_dir: /var/lib/esphome-updater
+
+# Directory for log files
+log_dir: /var/log/esphome-updater
+
+# ==============================================================================
+# SSH MODE (NOT YET IMPLEMENTED)
+# ==============================================================================
+# Use these when mode: ssh
+
+# ssh_host: codex
+# ssh_user: csjudd
+# ssh_key_file: ~/.ssh/id_ed25519
+# ssh_port: 22
+
+# ==============================================================================
+# DIRECT MODE
+# ==============================================================================
+# Use these when mode: direct (ESPHome CLI in PATH)
+
+# esphome_cli: esphome  # or /usr/local/bin/esphome

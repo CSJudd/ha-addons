@@ -1,0 +1,39 @@
+# ESPHome Selective Updates - Git Ignore
+
+# Standalone configs (may contain passwords/sensitive data)
+standalone/config.yaml
+standalone/config-*.yaml
+standalone/*.log
+standalone/*.json
+
+# State files
+standalone/state.json
+standalone/progress.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.bak
+*.backup

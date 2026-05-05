@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""
+ESPHome Selective Updates - Standalone Launcher
+
+This wrapper adapts the HAOS addon code to work as a standalone service
+on separated ESPHome builder instances (like Codex).
+
+Usage:
+  # Using config file
+  esphome-updater --config /path/to/config.yaml
+
+  # Using environment variables
+  ESPHOME_CONFIG_DIR=/opt/data-services/esphome/production \\
+  ESPHOME_CONTAINER=codex-esphome-production \\
+  esphome-updater
+
+  # Via SSH to remote builder
+  ESPHOME_SSH_HOST=codex \\
+  ESPHOME_SSH_USER=csjudd \\
+  ESPHOME_CONFIG_DIR=/opt/data-services/esphome/production \\
+  esphome-updater --mode ssh
+
+Author: Chris Judd
+License: MIT
+"""
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+import yaml
+from pathlib import Path
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+DEFAULT_CONFIG = {
+    "mode": "docker",  # docker, ssh, or direct
+    "ota_password": "",
+    "skip_offline": True,
+    "delay_between_updates": 3,
+    "dry_run": False,
+    "max_devices_per_run": 0,
+    "start_from_device": "",
+    "update_only_these": [],
+
+    # Paths (adjust for your environment)
+    "esphome_config_dir": "/opt/data-services/esphome/production",
+    "state_dir": "/var/lib/esphome-updater",
+    "log_dir": "/var/log/esphome-updater",
+
+    # Docker mode
+    "esphome_container": "codex-esphome-production",
+
+    # SSH mode
+    "ssh_host": None,
+    "ssh_user": None,
+    "ssh_key_file": None,
+    "ssh_port": 22,
+
+    # Direct mode (ESPHome CLI in PATH)
+    "esphome_cli": "esphome",
+}
+
+def load_config(config_file: Path = None) -> dict:
+    """Load configuration from file or environment variables"""
+    config = DEFAULT_CONFIG.copy()
+
+    # Load from YAML config file
+    if config_file and config_file.exists():
+        try:
+            with config_file.open() as f:
+                loaded = yaml.safe_load(f) or {}
+            config.update(loaded)
+            print(f"Loaded config from: {config_file}")
+        except Exception as e:
+            print(f"ERROR: Failed to load config file: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Override with environment variables
+    env_mapping = {
+        "ESPHOME_MODE": "mode",
+        "ESPHOME_CONFIG_DIR": "esphome_config_dir",
+        "ESPHOME_STATE_DIR": "state_dir",
+        "ESPHOME_LOG_DIR": "log_dir",
+        "ESPHOME_CONTAINER": "esphome_container",
+        "ESPHOME_SSH_HOST": "ssh_host",
+        "ESPHOME_SSH_USER": "ssh_user",
+        "ESPHOME_SSH_KEY": "ssh_key_file",
+        "ESPHOME_SSH_PORT": "ssh_port",
+        "ESPHOME_OTA_PASSWORD": "ota_password",
+        "ESPHOME_DRY_RUN": "dry_run",
+    }
+
+    for env_var, config_key in env_mapping.items():
+        if env_var in os.environ:
+            value = os.environ[env_var]
+
+            # Type conversion
+            if config_key in ("ssh_port", "delay_between_updates", "max_devices_per_run"):
+                value = int(value)
+            elif config_key in ("skip_offline", "dry_run"):
+                value = value.lower() in ("true", "yes", "1", "on")
+
+            config[config_key] = value
+
+    return config
+
+# ============================================================================
+# ADAPTER FOR ORIGINAL ADDON CODE
+# ============================================================================
+
+def create_addon_environment(config: dict) -> dict:
+    """
+    Create a fake HAOS addon environment that the original code expects
+    Returns: Environment variables to set
+    """
+    # Create temp directory for addon-style files
+    work_dir = Path(tempfile.mkdtemp(prefix="esphome-updater-"))
+
+    # Create /data/options.json equivalent
+    data_dir = work_dir / "data"
+    data_dir.mkdir()
+
+    options = {
+        "ota_password": config["ota_password"],
+        "skip_offline": config["skip_offline"],
+        "delay_between_updates": config["delay_between_updates"],
+        "esphome_container": config["esphome_container"],
+        "dry_run": config["dry_run"],
+        "max_devices_per_run": config["max_devices_per_run"],
+        "start_from_device": config["start_from_device"],
+        "update_only_these": config["update_only_these"],
+        "clear_log_on_start": False,
+        "clear_log_now": False,
+        "clear_progress_on_start": False,
+        "clear_progress_now": False,
+        "always_clear_log_on_version_change": False,
+    }
+
+    options_file = data_dir / "options.json"
+    options_file.write_text(json.dumps(options, indent=2))
+
+    # Map paths for original code
+    # Original expects: /config/esphome, /config/*.log, /data/state.json
+    # We map to: actual ESPHome dir, log_dir, state_dir
+
+    env = os.environ.copy()
+    env.update({
+        "ESPHOME_UPDATER_DATA_DIR": str(data_dir),
+        "ESPHOME_UPDATER_CONFIG_DIR": str(config["esphome_config_dir"]),
+        "ESPHOME_UPDATER_STATE_DIR": str(config["state_dir"]),
+        "ESPHOME_UPDATER_LOG_DIR": str(config["log_dir"]),
+        "ESPHOME_UPDATER_MODE": config["mode"],
+        "ADDON_VERSION": "2.0.0-standalone",
+    })
+
+    # SSH mode environment
+    if config["mode"] == "ssh":
+        env.update({
+            "ESPHOME_SSH_HOST": config["ssh_host"] or "",
+            "ESPHOME_SSH_USER": config["ssh_user"] or "",
+            "ESPHOME_SSH_KEY": config.get("ssh_key_file") or "",
+            "ESPHOME_SSH_PORT": str(config.get("ssh_port", 22)),
+        })
+
+    return env, work_dir
+
+# ============================================================================
+# DOCKER MODE ADAPTER
+# ============================================================================
+
+def run_docker_mode(config: dict):
+    """Run updater in Docker mode (local Docker daemon)"""
+    import subprocess
+
+    # Verify Docker is available
+    try:
+        subprocess.run(["docker", "ps"], check=True, capture_output=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(f"ERROR: Docker not available: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Verify container exists
+    container = config["esphome_container"]
+    try:
+        subprocess.run(
+            ["docker", "inspect", container],
+            check=True,
+            capture_output=True
+        )
+    except subprocess.CalledProcessError:
+        print(f"ERROR: ESPHome container '{container}' not found", file=sys.stderr)
+        print("\nRun 'docker ps' to find the correct container name", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✓ Docker mode - container: {container}")
+    return run_original_code(config)
+
+# ============================================================================
+# SSH MODE ADAPTER
+# ============================================================================
+
+def run_ssh_mode(config: dict):
+    """Run updater in SSH mode (remote ESPHome builder)"""
+    ssh_host = config.get("ssh_host")
+    ssh_user = config.get("ssh_user")
+
+    if not ssh_host or not ssh_user:
+        print("ERROR: SSH mode requires ssh_host and ssh_user", file=sys.stderr)
+        sys.exit(1)
+
+    # Test SSH connection
+    import subprocess
+
+    ssh_cmd = ["ssh", "-p", str(config.get("ssh_port", 22))]
+
+    if config.get("ssh_key_file"):
+        ssh_cmd.extend(["-i", config["ssh_key_file"]])
+
+    ssh_cmd.extend([
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=10",
+        f"{ssh_user}@{ssh_host}",
+        "echo 'SSH OK'"
+    ])
+
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            print(f"ERROR: SSH connection failed: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: SSH connection failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✓ SSH mode - target: {ssh_user}@{ssh_host}:{config.get('ssh_port', 22)}")
+
+    # In SSH mode, we need to invoke the updater ON the remote host
+    # This requires the updater to be installed there as well
+    print("\nWARNING: SSH mode requires esphome_smart_updater.py to be", file=sys.stderr)
+    print("         installed on the remote host. This is not yet implemented.", file=sys.stderr)
+    print("\nFor now, use Docker mode with a local Docker daemon that has", file=sys.stderr)
+    print("access to the ESPHome container on Codex.", file=sys.stderr)
+    sys.exit(1)
+
+# ============================================================================
+# ORIGINAL CODE RUNNER
+# ============================================================================
+
+def run_original_code(config: dict):
+    """Run the original addon code with adapted environment"""
+    import subprocess
+
+    # Create fake addon environment
+    env, work_dir = create_addon_environment(config)
+
+    # Find the original updater script
+    script_dir = Path(__file__).parent.parent
+    original_script = script_dir / "esphome_smart_updater.py"
+
+    if not original_script.exists():
+        print(f"ERROR: Original updater script not found: {original_script}", file=sys.stderr)
+        sys.exit(1)
+
+    # Create a wrapper script that patches paths
+    wrapper_script = work_dir / "wrapper.py"
+    wrapper_script.write_text(f"""#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+# Patch paths for standalone mode
+ADDON_OPTIONS_PATH = Path("{env['ESPHOME_UPDATER_DATA_DIR']}/options.json")
+STATE_PATH         = Path("{config['state_dir']}/state.json")
+LOG_FILE           = Path("{config['log_dir']}/esphome_smart_update.log")
+PROGRESS_FILE      = Path("{config['state_dir']}/esphome_update_progress.json")
+ESPHOME_CONFIG_DIR = Path("{config['esphome_config_dir']}")
+DASHBOARD_JSON     = ESPHOME_CONFIG_DIR / ".dashboard.json"
+
+# Inject into module namespace
+import types
+sys.modules['__patch__'] = types.ModuleType('__patch__')
+sys.modules['__patch__'].ADDON_OPTIONS_PATH = ADDON_OPTIONS_PATH
+sys.modules['__patch__'].STATE_PATH = STATE_PATH
+sys.modules['__patch__'].LOG_FILE = LOG_FILE
+sys.modules['__patch__'].PROGRESS_FILE = PROGRESS_FILE
+sys.modules['__patch__'].ESPHOME_CONFIG_DIR = ESPHOME_CONFIG_DIR
+sys.modules['__patch__'].DASHBOARD_JSON = DASHBOARD_JSON
+
+# Now load and patch the original script
+with open("{original_script}") as f:
+    code = f.read()
+
+# Replace path constants
+code = code.replace(
+    'ADDON_OPTIONS_PATH = Path("/data/options.json")',
+    'from __patch__ import ADDON_OPTIONS_PATH'
+)
+code = code.replace(
+    'STATE_PATH         = Path("/data/state.json")',
+    'from __patch__ import STATE_PATH'
+)
+code = code.replace(
+    'LOG_FILE           = Path("/config/esphome_smart_update.log")',
+    'from __patch__ import LOG_FILE'
+)
+code = code.replace(
+    'PROGRESS_FILE      = Path("/config/esphome_update_progress.json")',
+    'from __patch__ import PROGRESS_FILE'
+)
+code = code.replace(
+    'ESPHOME_CONFIG_DIR = Path("/config/esphome")',
+    'from __patch__ import ESPHOME_CONFIG_DIR'
+)
+code = code.replace(
+    'DASHBOARD_JSON     = ESPHOME_CONFIG_DIR / ".dashboard.json"',
+    'from __patch__ import DASHBOARD_JSON'
+)
+
+# Execute the patched code
+exec(code)
+""")
+
+    # Ensure directories exist
+    Path(config["state_dir"]).mkdir(parents=True, exist_ok=True)
+    Path(config["log_dir"]).mkdir(parents=True, exist_ok=True)
+
+    # Run the wrapper
+    try:
+        result = subprocess.run(
+            [sys.executable, str(wrapper_script)],
+            env=env
+        )
+        return result.returncode
+    finally:
+        # Cleanup temp directory
+        import shutil
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="ESPHome Selective Updates - Standalone Mode"
+    )
+    parser.add_argument(
+        "--config", "-c",
+        type=Path,
+        help="Path to config YAML file"
+    )
+    parser.add_argument(
+        "--mode", "-m",
+        choices=["docker", "ssh", "direct"],
+        help="Override mode (docker, ssh, or direct)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview updates without executing"
+    )
+    parser.add_argument(
+        "--list-config",
+        action="store_true",
+        help="Show current configuration and exit"
+    )
+
+    args = parser.parse_args()
+
+    # Load configuration
+    config = load_config(args.config)
+
+    # Command line overrides
+    if args.mode:
+        config["mode"] = args.mode
+    if args.dry_run:
+        config["dry_run"] = True
+
+    # Show config and exit
+    if args.list_config:
+        print("Current Configuration:")
+        print(yaml.dump(config, default_flow_style=False))
+        return 0
+
+    # Dispatch to appropriate mode
+    print(f"ESPHome Selective Updates - Standalone Mode")
+    print(f"Mode: {config['mode']}")
+    print(f"Config dir: {config['esphome_config_dir']}")
+    print()
+
+    if config["mode"] == "docker":
+        return run_docker_mode(config)
+    elif config["mode"] == "ssh":
+        return run_ssh_mode(config)
+    elif config["mode"] == "direct":
+        print("ERROR: Direct mode not yet implemented", file=sys.stderr)
+        return 1
+    else:
+        print(f"ERROR: Unknown mode: {config['mode']}", file=sys.stderr)
+        return 1
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n⚠ Interrupted by user", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"\n✗ FATAL ERROR: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

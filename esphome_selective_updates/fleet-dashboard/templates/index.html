@@ -1372,9 +1372,21 @@
                                     // Use the compile action
                                     await this.deviceAction('compile');
 
-                                    // After compile, prompt to download
-                                    if (confirm('✅ Compile complete!\n\nDownload firmware now?')) {
-                                        window.open(url, '_blank');
+                                    // After compile, verify firmware exists before downloading
+                                    this.deviceModal.output += '\n\n🔍 Verifying firmware file...\n';
+                                    const verifyResponse = await fetch(url);
+
+                                    if (verifyResponse.ok) {
+                                        if (confirm('✅ Compile complete!\n\nDownload firmware now?')) {
+                                            window.open(url, '_blank');
+                                        }
+                                    } else {
+                                        const verifyData = await verifyResponse.json();
+                                        alert('❌ Firmware not found after compile.\n\n' +
+                                              'This usually means:\n' +
+                                              '• Compile had errors (check output above)\n' +
+                                              '• Firmware is in an unexpected location\n\n' +
+                                              'Error: ' + (verifyData.error || 'Unknown'));
                                     }
                                 }
                             } else {

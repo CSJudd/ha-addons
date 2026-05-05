@@ -160,11 +160,15 @@
                 <div class="flex space-x-2">
                     <button @click="bulkOperation('compile')"
                             class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
-                        ⚙️ Compile Selected
+                        ⚙️ Compile Only
                     </button>
                     <button @click="bulkOperation('upload')"
                             class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition">
-                        ↑ Upload Selected (OTA)
+                        📡 OTA (Compile/Flash)
+                    </button>
+                    <button @click="bulkDownload()"
+                            class="px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition">
+                        💾 Download (Compile/Save)
                     </button>
                     <button @click="clearSelection()"
                             class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
@@ -835,11 +839,15 @@
                         </button>
                         <button @click="deviceAction('compile')"
                                 class="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center justify-center">
-                            <span class="mr-2">⚙</span> Compile
+                            <span class="mr-2">⚙️</span> Compile Only
                         </button>
                         <button @click="deviceAction('upload')"
                                 class="px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center justify-center">
-                            <span class="mr-2">↑</span> Upload (OTA)
+                            <span class="mr-2">📡</span> OTA (Compile/Flash)
+                        </button>
+                        <button @click="downloadFirmware()"
+                                class="px-4 py-3 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition flex items-center justify-center">
+                            <span class="mr-2">💾</span> Download (Compile/Save)
                         </button>
                         <button @click="deviceAction('logs')"
                                 class="px-4 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center justify-center">
@@ -847,15 +855,11 @@
                         </button>
                         <button @click="deviceAction('clean')"
                                 class="px-4 py-3 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition flex items-center justify-center">
-                            <span class="mr-2">🗑</span> Clean Build
+                            <span class="mr-2">🗑️</span> Clean Build
                         </button>
                         <button @click="deviceAction('config')"
                                 class="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition flex items-center justify-center">
                             <span class="mr-2">📄</span> View Config
-                        </button>
-                        <button @click="downloadFirmware()"
-                                class="px-4 py-3 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition flex items-center justify-center">
-                            <span class="mr-2">⬇️</span> Download Firmware
                         </button>
                         <button @click="toggleEditMode()"
                                 x-show="deviceModal.output && !deviceModal.editMode"
@@ -957,6 +961,7 @@
                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Error</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase" x-show="bulkProgress.operation === 'compile'">Actions</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-200">
@@ -973,6 +978,14 @@
                                               x-text="result.status"></span>
                                     </td>
                                     <td class="px-4 py-3 text-xs text-red-600" x-text="result.error_message || '-'"></td>
+                                    <td class="px-4 py-3" x-show="bulkProgress.operation === 'compile'">
+                                        <a x-show="result.status === 'success'"
+                                           :href="`/api/device/${result.instance}/${result.device_name}/firmware`"
+                                           target="_blank"
+                                           class="text-cyan-600 hover:text-cyan-800 text-xs">
+                                            💾 Download
+                                        </a>
+                                    </td>
                                 </tr>
                             </template>
                             <template x-if="bulkProgress.inProgress > 0">
@@ -1300,15 +1313,48 @@
                     }
                 },
 
-                downloadFirmware() {
+                async downloadFirmware() {
                     const device = this.deviceModal.device;
                     if (!device) return;
 
                     const deviceName = device.yaml_filename || device.name;
                     const url = `/api/device/${device.instance}/${deviceName}/firmware`;
 
-                    // Open in new tab to trigger download
-                    window.open(url, '_blank');
+                    try {
+                        // Try to download firmware
+                        const response = await fetch(url);
+
+                        if (response.ok) {
+                            // Firmware exists, trigger download
+                            window.open(url, '_blank');
+                        } else if (response.status === 404) {
+                            // Firmware doesn't exist, compile first
+                            const data = await response.json();
+
+                            if (data.error && data.error.includes('not been compiled')) {
+                                const confirmed = confirm('⚙️ Device not compiled yet.\n\nCompile now? (will take 1-3 minutes)');
+                                if (confirmed) {
+                                    this.deviceModal.output = 'Starting compile for firmware download...\n\n';
+                                    this.deviceModal.loading = true;
+
+                                    // Use the compile action
+                                    await this.deviceAction('compile');
+
+                                    // After compile, prompt to download
+                                    if (confirm('✅ Compile complete!\n\nDownload firmware now?')) {
+                                        window.open(url, '_blank');
+                                    }
+                                }
+                            } else {
+                                alert('❌ ' + (data.error || 'Firmware not found'));
+                            }
+                        } else {
+                            alert('❌ Error downloading firmware');
+                        }
+                    } catch (error) {
+                        console.error('Download error:', error);
+                        alert('❌ Error: ' + error.message);
+                    }
                 },
 
                 toggleEditMode() {
@@ -1628,6 +1674,22 @@
                         console.error('Error starting bulk operation:', error);
                         alert('❌ Error: ' + error.message);
                     }
+                },
+
+                async bulkDownload() {
+                    if (this.selectedDevices.length === 0) {
+                        alert('Please select devices first');
+                        return;
+                    }
+
+                    const confirmed = confirm(`Compile and download firmware for ${this.selectedDevices.length} devices?\n\nThis will compile all selected devices (takes time), then show download links.`);
+                    if (!confirmed) return;
+
+                    // Start bulk compile operation
+                    await this.bulkOperation('compile');
+
+                    // Add message to progress modal about downloads
+                    alert('💡 Tip: After compile completes, download firmware from History tab → View Details → Download links per device');
                 },
 
                 async pollBulkProgress() {

@@ -28,6 +28,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+import aioesphomeapi
 
 # Add custom YAML constructors to handle ESPHome directives
 def include_constructor(loader, node):
@@ -194,6 +196,28 @@ def check_device_online(ip: str) -> str:
     except:
         return "offline"
 
+async def get_device_version_async(ip: str, password: str = "") -> Optional[str]:
+    """Query ESPHome device via API to get running version"""
+    if not ip:
+        return None
+
+    try:
+        cli = aioesphomeapi.APIClient(ip, 6053, password)
+        await cli.connect(login=True, timeout=5.0)
+        device_info = await cli.device_info()
+        await cli.disconnect()
+        return device_info.esphome_version
+    except Exception as e:
+        # Silently fail - device might be offline or API disabled
+        return None
+
+def get_device_version(ip: str) -> Optional[str]:
+    """Wrapper to run async version query in sync context"""
+    try:
+        return asyncio.run(get_device_version_async(ip))
+    except:
+        return None
+
 def discover_devices(instance: Dict) -> List[Dict]:
     """Discover all ESPHome devices for an instance"""
     config_dir = Path(instance["config_dir"])
@@ -310,6 +334,31 @@ def discover_devices(instance: Dict) -> List[Dict]:
 
     online_count = sum(1 for d in devices if d["status"] == "online")
     print(f"  {online_count}/{len(devices)} devices online")
+
+    # Third pass: query running versions from online devices via ESPHome API
+    online_devices = [d for d in devices if d["status"] == "online"]
+    if online_devices:
+        print(f"Querying running versions from {len(online_devices)} online devices...")
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            future_to_device = {
+                executor.submit(get_device_version, device["ip_address"]): device
+                for device in online_devices
+            }
+
+            for future in as_completed(future_to_device):
+                device = future_to_device[future]
+                try:
+                    running_version = future.result()
+                    if running_version:
+                        device["current_version"] = running_version
+                        # Check if update is available (compiled != running)
+                        if device["deployed_version"] and device["deployed_version"] != running_version:
+                            device["update_available"] = True
+                except Exception as e:
+                    print(f"Error querying version for {device['name']}: {e}")
+
+        version_count = sum(1 for d in online_devices if d.get("current_version"))
+        print(f"  Got versions from {version_count}/{len(online_devices)} devices")
 
     return devices
 

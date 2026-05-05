@@ -249,35 +249,66 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 name = substitutions.get(sub_var, yaml_file.stem)
             area = substitutions.get("area", "Unknown")
 
-            # Extract device type from name pattern
-            # Handle vd- prefix (e.g., vd-ai001-lounge-patio)
-            clean_name = name.replace("vd-", "").replace("_", "-")
-            parts = clean_name.split("-")
-            device_code = parts[0] if parts else name
+            # Get ESPHome version from substitutions (for version pinning)
+            esphome_version = substitutions.get("esphome_version", "*")
 
-            device_type = "unknown"
-            if device_code.startswith("sp"):
-                device_type = "Sonoff S31"
-            elif device_code.startswith("mjs") or device_code.startswith("mjd"):
-                device_type = "Martin Jerry"
-            elif device_code.startswith("as"):
-                device_type = "Athom Switch"
-            elif device_code.startswith("kauf"):
-                device_type = "Kauf RGB"
-            elif device_code.startswith("ap"):
-                device_type = "Athom Plug"
-            elif device_code.startswith("valve"):
-                device_type = "Valve"
-            elif device_code.startswith("ai"):
-                device_type = "Athom Inching"
-            elif device_code.startswith("aqp"):
-                device_type = "Aquarium Pump"
-            elif device_code.startswith("ratgdo"):
-                device_type = "RATGDO"
-            elif device_code.startswith("tsd"):
-                device_type = "Touchscreen"
-            elif device_code.startswith("wxd"):
-                device_type = "Weather Display"
+            # Get device type from substitutions first, fallback to name-based detection
+            device_type = substitutions.get("device_type")
+
+            if not device_type:
+                # Fallback: Extract device type from name pattern
+                # Handle vd- prefix (e.g., vd-ai001-lounge-patio)
+                clean_name = name.replace("vd-", "").replace("_", "-")
+                parts = clean_name.split("-")
+                device_code = parts[0] if parts else name
+
+                device_type = "unknown"
+                if device_code.startswith("sp"):
+                    device_type = "Sonoff S31"
+                elif device_code.startswith("si"):
+                    device_type = "Sonoff Inline"
+                elif device_code.startswith("mjs"):
+                    device_type = "MartinJerry Switch"
+                elif device_code.startswith("mjd"):
+                    device_type = "MartinJerry Dimmer"
+                elif device_code.startswith("mjf"):
+                    device_type = "MartinJerry Fan Control"
+                elif device_code.startswith("m3d"):
+                    device_type = "MartinJerry 3-Way Dimmer"
+                elif device_code.startswith("as"):
+                    device_type = "Athom Switch"
+                elif device_code.startswith("kauf") or device_code.startswith("rgb"):
+                    device_type = "Kauf RGB Switch"
+                elif device_code.startswith("ap"):
+                    device_type = "Athom Plug"
+                elif device_code.startswith("valve"):
+                    device_type = "Valve"
+                elif device_code.startswith("ai"):
+                    device_type = "Athom Inline"
+                elif device_code.startswith("aqp"):
+                    device_type = "AquaPods (Custom)"
+                elif device_code.startswith("ratgdo") or device_code.startswith("grd"):
+                    device_type = "RatGDO Garage Door Control"
+                elif device_code.startswith("tsd") or device_code.startswith("tds"):
+                    device_type = "Touchscreen Display"
+                elif device_code.startswith("wxd"):
+                    device_type = "Weather Display"
+                elif device_code.startswith("gdp"):
+                    device_type = "Gosund Dual Plug"
+                elif device_code.startswith("g3p"):
+                    device_type = "Gosund Outlets"
+                elif device_code.startswith("kmc"):
+                    device_type = "KMC Outlets"
+                elif device_code.startswith("epm"):
+                    device_type = "Energy Power Meter"
+                elif device_code.startswith("ff"):
+                    device_type = "Fish Feeders"
+                elif device_code.startswith("rsc"):
+                    device_type = "Recliner Smart Controllers (Custom)"
+            else:
+                # Parse name for room even when device_type comes from substitutions
+                clean_name = name.replace("vd-", "").replace("_", "-")
+                parts = clean_name.split("-")
 
             # Extract room from device name (e.g., vd-ai001-lounge-patio -> "Lounge Patio")
             # Fallback to area from substitutions if room can't be parsed
@@ -316,6 +347,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 "friendly_name": friendly_name or name,
                 "node_name": name,
                 "device_type": device_type,
+                "pinned_version": esphome_version,  # From substitutions for version pinning
                 "room": room,
                 "area": area,  # From substitutions
                 "ip_address": ip,

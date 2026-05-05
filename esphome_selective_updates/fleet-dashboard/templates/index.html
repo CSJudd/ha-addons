@@ -222,6 +222,9 @@
                                         </td>
                                         <td class="px-4 py-3">
                                             <div class="text-sm text-gray-900" x-text="device.current_version || device.deployed_version || 'unknown'"></div>
+                                            <div x-show="device.pinned_version && device.pinned_version !== '*'" class="text-xs text-blue-600">
+                                                📌 Pinned: <span x-text="device.pinned_version"></span>
+                                            </div>
                                             <div x-show="device.update_available" class="text-xs text-orange-600">
                                                 ⚠ Update to <span x-text="device.deployed_version"></span>
                                             </div>
@@ -301,6 +304,9 @@
                                                     </td>
                                                     <td class="px-4 py-2">
                                                         <div class="text-sm text-gray-900" x-text="device.current_version || device.deployed_version || 'unknown'"></div>
+                                                        <div x-show="device.pinned_version && device.pinned_version !== '*'" class="text-xs text-blue-600">
+                                                            📌 Pinned: <span x-text="device.pinned_version"></span>
+                                                        </div>
                                                         <div x-show="device.update_available" class="text-xs text-orange-600">
                                                             ⚠ Update to <span x-text="device.deployed_version"></span>
                                                         </div>

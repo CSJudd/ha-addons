@@ -1753,7 +1753,7 @@
                     const device = this.deviceModal.device;
                     if (!device) return;
 
-                    // Get dashboard URL for this instance (use full domain names)
+                    // Get dashboard URL for this instance
                     const dashboardUrls = {
                         'production': 'https://codex.grid.foxrunn.net:6052',
                         'lab': 'https://codex.grid.foxrunn.net:6054'
@@ -1765,9 +1765,9 @@
                         return;
                     }
 
-                    // Open native ESPHome dashboard edit page for this device
-                    const deviceUrl = `${baseUrl}/edit?configuration=${device.config_file}`;
-                    window.open(deviceUrl, '_blank', 'width=1400,height=900');
+                    // Open base dashboard - SPA routing prevents deep linking
+                    alert(`Opening ${device.instance} ESPHome dashboard.\n\nFind device: ${device.name} (${device.config_file})`);
+                    window.open(baseUrl, `esphome-${device.instance}`, 'width=1400,height=900');
                 },
 
                 // ============================================================================

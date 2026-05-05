@@ -320,6 +320,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 "area": area,  # From substitutions
                 "ip_address": ip,
                 "config_file": yaml_file.name,
+                "yaml_filename": yaml_file.stem,  # Original filename without extension
                 "status": "unknown",  # Will be updated in parallel
                 "deployed_version": deployed_version,
                 "current_version": None,

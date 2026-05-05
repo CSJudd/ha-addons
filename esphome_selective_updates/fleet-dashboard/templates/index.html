@@ -745,7 +745,9 @@
                     this.deviceModal.output = '';
 
                     try {
-                        let url = `/api/device/${device.instance}/${device.name}/${action}`;
+                        // Use yaml_filename for API calls (original file name)
+                        const deviceName = device.yaml_filename || device.name;
+                        let url = `/api/device/${device.instance}/${deviceName}/${action}`;
                         let method = ['validate', 'compile', 'upload', 'clean'].includes(action) ? 'POST' : 'GET';
 
                         const response = await fetch(url, { method });
@@ -782,7 +784,9 @@
                     this.deviceModal.loading = true;
 
                     try {
-                        const response = await fetch(`/api/device/${device.instance}/${device.name}/config`, {
+                        // Use yaml_filename for API calls (original file name)
+                        const deviceName = device.yaml_filename || device.name;
+                        const response = await fetch(`/api/device/${device.instance}/${deviceName}/config`, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({config: this.deviceModal.output})

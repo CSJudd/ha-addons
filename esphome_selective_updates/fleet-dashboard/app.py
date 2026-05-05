@@ -280,6 +280,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 sub_var = name[2:-1]  # Extract variable name
                 name = substitutions.get(sub_var, yaml_file.stem)
             area = substitutions.get("area", "Unknown")
+            physical_location = substitutions.get("physical_location")
 
             # Get ESPHome version from substitutions (for version pinning)
             esphome_version = substitutions.get("esphome_version", "*")
@@ -331,6 +332,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 "pinned_version": esphome_version,  # From substitutions for version pinning
                 "room": room,
                 "area": area,  # From substitutions
+                "physical_location": physical_location,  # From substitutions (optional)
                 "ip_address": ip,
                 "config_file": yaml_file.name,
                 "yaml_filename": yaml_file.stem,  # Original filename without extension
@@ -959,12 +961,15 @@ def update_config():
 
 @app.route('/api/check-substitutions')
 def check_substitutions():
-    """Check all device YAMLs for required substitutions"""
+    """Check all device YAMLs for required and recommended substitutions"""
     required_substitutions = ['device_type', 'esphome_version', 'area']
+    recommended_substitutions = ['physical_location']
     results = {
         'total_devices': 0,
         'compliant_devices': 0,
+        'missing_recommended': 0,
         'issues': [],
+        'recommended_issues': [],
         'by_instance': {}
     }
 
@@ -980,6 +985,7 @@ def check_substitutions():
                 continue
 
             instance_issues = []
+            instance_recommended_issues = []
 
             for yaml_file in sorted(config_dir.glob("*.yaml")):
                 try:
@@ -987,22 +993,39 @@ def check_substitutions():
                         config = yaml.safe_load(f)
 
                     substitutions = config.get("substitutions", {})
-                    missing = []
+                    missing_required = []
+                    missing_recommended = []
 
+                    # Check required substitutions
                     for req_sub in required_substitutions:
                         if req_sub not in substitutions:
-                            missing.append(req_sub)
+                            missing_required.append(req_sub)
+
+                    # Check recommended substitutions
+                    for rec_sub in recommended_substitutions:
+                        if rec_sub not in substitutions:
+                            missing_recommended.append(rec_sub)
 
                     results['total_devices'] += 1
 
-                    if missing:
+                    # Track required issues
+                    if missing_required:
                         instance_issues.append({
                             'device': yaml_file.stem,
-                            'missing': missing,
+                            'missing': missing_required,
                             'has': list(substitutions.keys())
                         })
                     else:
                         results['compliant_devices'] += 1
+
+                    # Track recommended issues separately
+                    if missing_recommended:
+                        instance_recommended_issues.append({
+                            'device': yaml_file.stem,
+                            'missing': missing_recommended,
+                            'has': list(substitutions.keys())
+                        })
+                        results['missing_recommended'] += 1
 
                 except Exception as e:
                     instance_issues.append({
@@ -1013,6 +1036,9 @@ def check_substitutions():
             if instance_issues:
                 results['issues'].extend([{**issue, 'instance': instance_name} for issue in instance_issues])
                 results['by_instance'][instance_name] = len(instance_issues)
+
+            if instance_recommended_issues:
+                results['recommended_issues'].extend([{**issue, 'instance': instance_name} for issue in instance_recommended_issues])
 
         return jsonify(results)
 

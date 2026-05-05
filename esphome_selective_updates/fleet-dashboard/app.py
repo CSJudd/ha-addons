@@ -657,7 +657,7 @@ def compile_device(instance, device_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/device/<instance>/<device_name>/compile/stream', methods=['POST'])
+@app.route('/api/device/<instance>/<device_name>/compile/stream', methods=['GET', 'POST'])
 def compile_device_stream(instance, device_name):
     """Compile device firmware with real-time streaming output"""
     instance_config = get_instance_config(instance)
@@ -758,7 +758,7 @@ def upload_device(instance, device_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/device/<instance>/<device_name>/upload/stream', methods=['POST'])
+@app.route('/api/device/<instance>/<device_name>/upload/stream', methods=['GET', 'POST'])
 def upload_device_stream(instance, device_name):
     """Upload firmware to device (OTA) with real-time streaming output"""
     instance_config = get_instance_config(instance)

@@ -1334,6 +1334,7 @@
                             const wsUrl = `${protocol}//${window.location.host}/ws/${action}`;
 
                             const ws = new WebSocket(wsUrl);
+                            let operationFailed = false;
 
                             ws.onopen = () => {
                                 // Send spawn message to start operation
@@ -1349,13 +1350,22 @@
 
                                 if (data.type === 'line') {
                                     this.deviceModal.output += data.data + '\n';
+                                    // Check for failure markers
+                                    if (data.data.includes('[FAILED]') || data.data.includes('FAILED]')) {
+                                        operationFailed = true;
+                                    }
                                 } else if (data.type === 'exit') {
                                     ws.close();
                                     this.deviceModal.loading = false;
-                                    if (data.code === 0) {
+                                    // Check both exit code and output
+                                    if (data.code === 0 && !operationFailed) {
                                         this.deviceModal.output += '\n✅ Completed successfully!';
                                     } else {
-                                        this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
+                                        if (operationFailed) {
+                                            this.deviceModal.output += `\n❌ ${action.toUpperCase()} FAILED - see errors above`;
+                                        } else {
+                                            this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
+                                        }
                                     }
                                 } else if (data.type === 'error') {
                                     this.deviceModal.output += `\n❌ Error: ${data.data}`;
@@ -1416,6 +1426,8 @@
                     const wsUrl = `${protocol}//${window.location.host}/ws/compile`;
                     const ws = new WebSocket(wsUrl);
 
+                    let compileFailed = false;
+
                     ws.onopen = () => {
                         ws.send(JSON.stringify({
                             type: 'spawn',
@@ -1429,11 +1441,16 @@
 
                         if (data.type === 'line') {
                             this.deviceModal.output += data.data + '\n';
+                            // Check for failure markers in output
+                            if (data.data.includes('[FAILED]') || data.data.includes('FAILED]')) {
+                                compileFailed = true;
+                            }
                         } else if (data.type === 'exit') {
                             ws.close();
                             this.deviceModal.loading = false;
 
-                            if (data.code === 0) {
+                            // Check both exit code and output for failure
+                            if (data.code === 0 && !compileFailed) {
                                 this.deviceModal.output += '\n✅ Compile completed successfully!\n\n🔍 Verifying firmware...\n';
 
                                 // Download firmware
@@ -1448,7 +1465,11 @@
                                     this.deviceModal.output += `\n❌ Firmware not found: ${errorData.error || 'Unknown error'}`;
                                 }
                             } else {
-                                this.deviceModal.output += `\n❌ Compile failed with exit code ${data.code}`;
+                                if (compileFailed) {
+                                    this.deviceModal.output += `\n❌ Compile FAILED - see errors above`;
+                                } else {
+                                    this.deviceModal.output += `\n❌ Compile failed with exit code ${data.code}`;
+                                }
                             }
                         } else if (data.type === 'error') {
                             this.deviceModal.output += `\n❌ Error: ${data.data}`;

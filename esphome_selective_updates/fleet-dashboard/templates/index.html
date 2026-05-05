@@ -85,19 +85,27 @@
         <div x-show="activeTab === 'devices'">
         <!-- Stats Bar -->
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <div class="bg-white rounded-lg shadow p-4">
+            <div @click="selectStatFilter('all')"
+                 :class="selectedStatFilter === 'all' ? 'ring-4 ring-blue-500' : ''"
+                 class="bg-white rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
                 <div class="text-gray-500 text-sm">Total Devices</div>
                 <div class="text-3xl font-bold text-gray-800" x-text="filteredDevices.length"></div>
             </div>
-            <div class="bg-green-50 rounded-lg shadow p-4">
+            <div @click="selectStatFilter('online')"
+                 :class="selectedStatFilter === 'online' ? 'ring-4 ring-green-500' : ''"
+                 class="bg-green-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
                 <div class="text-green-600 text-sm">Online</div>
                 <div class="text-3xl font-bold text-green-700" x-text="stats.online"></div>
             </div>
-            <div class="bg-red-50 rounded-lg shadow p-4">
+            <div @click="selectStatFilter('offline')"
+                 :class="selectedStatFilter === 'offline' ? 'ring-4 ring-red-500' : ''"
+                 class="bg-red-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
                 <div class="text-red-600 text-sm">Offline</div>
                 <div class="text-3xl font-bold text-red-700" x-text="stats.offline"></div>
             </div>
-            <div class="bg-yellow-50 rounded-lg shadow p-4">
+            <div @click="selectStatFilter('updates')"
+                 :class="selectedStatFilter === 'updates' ? 'ring-4 ring-yellow-500' : ''"
+                 class="bg-yellow-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
                 <div class="text-yellow-600 text-sm">Updates Available</div>
                 <div class="text-3xl font-bold text-yellow-700" x-text="stats.updates"></div>
             </div>
@@ -1032,6 +1040,7 @@
                     status: ''
                 },
                 groupBy: 'none',
+                selectedStatFilter: 'all',
                 stats: {
                     online: 0,
                     offline: 0,
@@ -1166,14 +1175,34 @@
                         filtered = filtered.filter(d => d.device_type === this.filters.type);
                     }
 
+                    // Calculate stats from current filtered set (before stat filter)
+                    const statsOnline = filtered.filter(d => d.status === 'online').length;
+                    const statsOffline = filtered.filter(d => d.status === 'offline').length;
+                    const statsUpdates = filtered.filter(d => d.update_available).length;
+
+                    // Apply stat filter
+                    if (this.selectedStatFilter === 'online') {
+                        filtered = filtered.filter(d => d.status === 'online');
+                    } else if (this.selectedStatFilter === 'offline') {
+                        filtered = filtered.filter(d => d.status === 'offline');
+                    } else if (this.selectedStatFilter === 'updates') {
+                        filtered = filtered.filter(d => d.update_available);
+                    }
+                    // 'all' shows everything (no additional filter)
+
                     this.filteredDevices = filtered;
 
-                    // Calculate stats from filtered devices
-                    this.stats.online = filtered.filter(d => d.status === 'online').length;
-                    this.stats.offline = filtered.filter(d => d.status === 'offline').length;
-                    this.stats.updates = filtered.filter(d => d.update_available).length;
+                    // Set stats (these show counts from before stat filter is applied)
+                    this.stats.online = statsOnline;
+                    this.stats.offline = statsOffline;
+                    this.stats.updates = statsUpdates;
 
                     this.updateView();
+                },
+
+                selectStatFilter(filter) {
+                    this.selectedStatFilter = filter;
+                    this.filterDevices();
                 },
 
                 get groupedDevices() {

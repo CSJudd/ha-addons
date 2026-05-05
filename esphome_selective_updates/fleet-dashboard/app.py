@@ -24,8 +24,16 @@ import subprocess
 import yaml
 from datetime import datetime
 from typing import List, Dict, Optional
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import os
+
+# Add custom YAML constructor to handle ESPHome's !include directive
+def include_constructor(loader, node):
+    """Dummy constructor for !include - just return empty dict"""
+    return {}
+
+yaml.add_constructor('!include', include_constructor, Loader=yaml.SafeLoader)
 
 app = Flask(__name__)
 
@@ -65,7 +73,14 @@ def load_config():
             "script_path": "/opt/esphome-updater/esphome_selective_updates/standalone/esphome-updater",
             "config_template": "/opt/esphome-updater/esphome_selective_updates/standalone/config-production.yaml"
         },
-        "database": "/var/lib/esphome-fleet/fleet.db",
+        "database": {
+            "type": "postgresql",
+            "host": "localhost",
+            "port": 5432,
+            "database": "esphome_fleet",
+            "user": "homeassistant",
+            "password": "Yg-vMc-fL2adAguFNuJuuWP3Km"
+        },
         "server": {
             "host": "0.0.0.0",
             "port": 8080
@@ -78,18 +93,29 @@ CONFIG = load_config()
 # DATABASE
 # ============================================================================
 
-def init_db():
-    """Initialize SQLite database for fleet tracking"""
-    db_path = Path(CONFIG["database"])
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+def get_db_connection():
+    """Get PostgreSQL database connection"""
+    db_config = CONFIG["database"]
+    return psycopg2.connect(
+        host=db_config["host"],
+        port=db_config["port"],
+        database=db_config["database"],
+        user=db_config["user"],
+        password=db_config["password"]
+    )
 
-    conn = sqlite3.connect(db_path)
+def init_db():
+    """Initialize PostgreSQL database for fleet tracking"""
+    conn = get_db_connection()
     c = conn.cursor()
+
+    # Create schema if it doesn't exist
+    c.execute("CREATE SCHEMA IF NOT EXISTS fleet_manager")
 
     # Devices table
     c.execute('''
-        CREATE TABLE IF NOT EXISTS devices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS fleet_manager.devices (
+            id SERIAL PRIMARY KEY,
             instance TEXT NOT NULL,
             name TEXT NOT NULL,
             node_name TEXT,
@@ -109,8 +135,8 @@ def init_db():
 
     # Update history table
     c.execute('''
-        CREATE TABLE IF NOT EXISTS update_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS fleet_manager.update_history (
+            id SERIAL PRIMARY KEY,
             device_name TEXT NOT NULL,
             instance TEXT NOT NULL,
             started_at TIMESTAMP,
@@ -126,8 +152,8 @@ def init_db():
 
     # Update campaigns table
     c.execute('''
-        CREATE TABLE IF NOT EXISTS campaigns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS fleet_manager.campaigns (
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             instance TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

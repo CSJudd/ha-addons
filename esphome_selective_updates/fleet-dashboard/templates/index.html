@@ -1324,37 +1324,56 @@
                         // Use yaml_filename for API calls (original file name)
                         const deviceName = device.yaml_filename || device.name;
 
-                        // Use streaming for compile and upload
+                        // Use WebSocket streaming for compile and upload
                         if (action === 'compile' || action === 'upload') {
                             this.deviceModal.output = `Starting ${action}...\n\n`;
 
-                            const url = `/api/device/${device.instance}/${deviceName}/${action}/stream`;
-                            const eventSource = new EventSource(url);
+                            // Determine WebSocket URL
+                            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                            const wsUrl = `${protocol}//${window.location.host}/ws/${action}`;
 
-                            eventSource.onmessage = (event) => {
+                            const ws = new WebSocket(wsUrl);
+
+                            ws.onopen = () => {
+                                // Send spawn message to start operation
+                                ws.send(JSON.stringify({
+                                    type: 'spawn',
+                                    instance: device.instance,
+                                    device: deviceName
+                                }));
+                            };
+
+                            ws.onmessage = (event) => {
                                 const data = JSON.parse(event.data);
 
-                                if (data.line) {
-                                    this.deviceModal.output += data.line + '\n';
-                                } else if (data.done) {
-                                    eventSource.close();
+                                if (data.type === 'line') {
+                                    this.deviceModal.output += data.data + '\n';
+                                } else if (data.type === 'exit') {
+                                    ws.close();
                                     this.deviceModal.loading = false;
-                                    if (data.success) {
+                                    if (data.code === 0) {
                                         this.deviceModal.output += '\n✅ Completed successfully!';
                                     } else {
-                                        this.deviceModal.output += '\n❌ Failed. See output above for details.';
+                                        this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
                                     }
-                                } else if (data.error) {
-                                    this.deviceModal.output += `\n❌ Error: ${data.error}`;
-                                    eventSource.close();
+                                } else if (data.type === 'error') {
+                                    this.deviceModal.output += `\n❌ Error: ${data.data}`;
+                                    ws.close();
                                     this.deviceModal.loading = false;
                                 }
                             };
 
-                            eventSource.onerror = (error) => {
-                                this.deviceModal.output += '\n❌ Connection error';
-                                eventSource.close();
+                            ws.onerror = (error) => {
+                                this.deviceModal.output += '\n❌ WebSocket connection error';
                                 this.deviceModal.loading = false;
+                            };
+
+                            ws.onclose = (event) => {
+                                if (this.deviceModal.loading) {
+                                    // Connection closed unexpectedly
+                                    this.deviceModal.output += '\n❌ Connection closed unexpectedly';
+                                    this.deviceModal.loading = false;
+                                }
                             };
 
                             // Don't set loading to false here - will be done by the stream

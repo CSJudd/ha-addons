@@ -1162,6 +1162,7 @@
                         const searchLower = this.search.toLowerCase();
                         filtered = filtered.filter(d =>
                             d.name.toLowerCase().includes(searchLower) ||
+                            (d.friendly_name && d.friendly_name.toLowerCase().includes(searchLower)) ||
                             d.device_type.toLowerCase().includes(searchLower) ||
                             (d.room && d.room.toLowerCase().includes(searchLower)) ||
                             (d.area && d.area.toLowerCase().includes(searchLower))

@@ -158,9 +158,13 @@
                     <span x-text="selectedDevices.length"></span> devices selected
                 </div>
                 <div class="flex space-x-2">
-                    <button @click="bulkUpdate()"
-                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
-                        ⚡ Update Selected
+                    <button @click="bulkOperation('compile')"
+                            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
+                        ⚙️ Compile Selected
+                    </button>
+                    <button @click="bulkOperation('upload')"
+                            class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition">
+                        ↑ Upload Selected (OTA)
                     </button>
                     <button @click="clearSelection()"
                             class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
@@ -849,6 +853,10 @@
                                 class="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition flex items-center justify-center">
                             <span class="mr-2">📄</span> View Config
                         </button>
+                        <button @click="downloadFirmware()"
+                                class="px-4 py-3 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition flex items-center justify-center">
+                            <span class="mr-2">⬇️</span> Download Firmware
+                        </button>
                         <button @click="toggleEditMode()"
                                 x-show="deviceModal.output && !deviceModal.editMode"
                                 class="px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center justify-center">
@@ -896,6 +904,103 @@
     </div>
 
     <!-- Alpine.js Data -->
+    <!-- Bulk Operation Progress Modal -->
+    <div x-show="bulkProgress.show"
+         x-cloak
+         class="fixed inset-0 z-50 overflow-y-auto"
+         @keydown.escape.window="closeBulkProgress()">
+        <div class="fixed inset-0 bg-black bg-opacity-50 transition-opacity"></div>
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="relative bg-white rounded-lg shadow-xl max-w-4xl w-full" @click.stop>
+                <div class="flex items-center justify-between px-6 py-4 border-b">
+                    <h2 class="text-xl font-bold text-gray-900">
+                        Bulk Operation: <span x-text="bulkProgress.operation"></span>
+                    </h2>
+                    <button @click="closeBulkProgress()" class="text-gray-400 hover:text-gray-600">
+                        <span class="text-2xl">&times;</span>
+                    </button>
+                </div>
+
+                <!-- Progress Overview -->
+                <div class="px-6 py-4 bg-gray-50 border-b">
+                    <div class="grid grid-cols-3 gap-4 text-center">
+                        <div>
+                            <div class="text-2xl font-bold text-blue-600" x-text="bulkProgress.completed"></div>
+                            <div class="text-xs text-gray-500">Completed</div>
+                        </div>
+                        <div>
+                            <div class="text-2xl font-bold text-green-600" x-text="bulkProgress.success"></div>
+                            <div class="text-xs text-gray-500">Success</div>
+                        </div>
+                        <div>
+                            <div class="text-2xl font-bold text-red-600" x-text="bulkProgress.failed"></div>
+                            <div class="text-xs text-gray-500">Failed</div>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div class="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                 :style="`width: ${(bulkProgress.completed / bulkProgress.total * 100)}%`"></div>
+                        </div>
+                        <div class="text-xs text-gray-500 mt-1 text-center">
+                            <span x-text="bulkProgress.completed"></span> / <span x-text="bulkProgress.total"></span> devices
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Device Results -->
+                <div class="px-6 py-4 max-h-96 overflow-y-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 border-b sticky top-0">
+                            <tr>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Device</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Error</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            <template x-for="result in bulkProgress.results" :key="result.device_name">
+                                <tr>
+                                    <td class="px-4 py-3 font-mono text-xs" x-text="result.device_name"></td>
+                                    <td class="px-4 py-3 text-xs" x-text="result.instance"></td>
+                                    <td class="px-4 py-3">
+                                        <span class="px-2 py-1 text-xs rounded-full"
+                                              :class="{
+                                                  'bg-green-100 text-green-700': result.status === 'success',
+                                                  'bg-red-100 text-red-700': result.status === 'failed'
+                                              }"
+                                              x-text="result.status"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-xs text-red-600" x-text="result.error_message || '-'"></td>
+                                </tr>
+                            </template>
+                            <template x-if="bulkProgress.inProgress > 0">
+                                <tr>
+                                    <td colspan="4" class="px-4 py-3 text-center text-gray-500">
+                                        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                                        <span x-text="bulkProgress.inProgress"></span> devices in progress...
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="px-6 py-4 border-t flex justify-between">
+                    <div class="text-sm text-gray-600">
+                        <span x-show="bulkProgress.status === 'running'">⏳ Operation in progress...</span>
+                        <span x-show="bulkProgress.status === 'completed'" class="text-green-600">✅ Operation completed!</span>
+                    </div>
+                    <button @click="closeBulkProgress()"
+                            class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         function fleetManager() {
             return {
@@ -959,6 +1064,19 @@
                     missingRecommended: 0,
                     issues: [],
                     recommendedIssues: []
+                },
+                bulkProgress: {
+                    show: false,
+                    operationId: null,
+                    operation: '',
+                    status: 'running',
+                    total: 0,
+                    completed: 0,
+                    success: 0,
+                    failed: 0,
+                    inProgress: 0,
+                    results: [],
+                    pollInterval: null
                 },
 
                 async init() {
@@ -1123,8 +1241,47 @@
                     try {
                         // Use yaml_filename for API calls (original file name)
                         const deviceName = device.yaml_filename || device.name;
+
+                        // Use streaming for compile and upload
+                        if (action === 'compile' || action === 'upload') {
+                            this.deviceModal.output = `Starting ${action}...\n\n`;
+
+                            const url = `/api/device/${device.instance}/${deviceName}/${action}/stream`;
+                            const eventSource = new EventSource(url);
+
+                            eventSource.onmessage = (event) => {
+                                const data = JSON.parse(event.data);
+
+                                if (data.line) {
+                                    this.deviceModal.output += data.line + '\n';
+                                } else if (data.done) {
+                                    eventSource.close();
+                                    this.deviceModal.loading = false;
+                                    if (data.success) {
+                                        this.deviceModal.output += '\n✅ Completed successfully!';
+                                    } else {
+                                        this.deviceModal.output += '\n❌ Failed. See output above for details.';
+                                    }
+                                } else if (data.error) {
+                                    this.deviceModal.output += `\n❌ Error: ${data.error}`;
+                                    eventSource.close();
+                                    this.deviceModal.loading = false;
+                                }
+                            };
+
+                            eventSource.onerror = (error) => {
+                                this.deviceModal.output += '\n❌ Connection error';
+                                eventSource.close();
+                                this.deviceModal.loading = false;
+                            };
+
+                            // Don't set loading to false here - will be done by the stream
+                            return;
+                        }
+
+                        // Non-streaming actions (validate, logs, config, clean)
                         let url = `/api/device/${device.instance}/${deviceName}/${action}`;
-                        let method = ['validate', 'compile', 'upload', 'clean'].includes(action) ? 'POST' : 'GET';
+                        let method = ['validate', 'clean'].includes(action) ? 'POST' : 'GET';
 
                         const response = await fetch(url, { method });
                         const data = await response.json();
@@ -1132,7 +1289,7 @@
                         if (action === 'config') {
                             this.deviceModal.output = data.config || 'No configuration found';
                         } else if (action === 'logs') {
-                            this.deviceModal.output = data.logs || 'No logs available';
+                            this.deviceModal.output = data.logs || data.error || 'No logs available';
                         } else {
                             this.deviceModal.output = data.output || data.error || 'Action completed';
                         }
@@ -1141,6 +1298,17 @@
                     } finally {
                         this.deviceModal.loading = false;
                     }
+                },
+
+                downloadFirmware() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    const deviceName = device.yaml_filename || device.name;
+                    const url = `/api/device/${device.instance}/${deviceName}/firmware`;
+
+                    // Open in new tab to trigger download
+                    window.open(url, '_blank');
                 },
 
                 toggleEditMode() {
@@ -1398,6 +1566,119 @@
                         console.error('Error checking substitutions:', error);
                         alert('❌ Error checking substitutions: ' + error.message);
                         this.validationResults.loading = false;
+                    }
+                },
+
+                // ============================================================================
+                // BULK OPERATIONS METHODS
+                // ============================================================================
+
+                async bulkOperation(operation) {
+                    if (this.selectedDevices.length === 0) {
+                        alert('Please select devices first');
+                        return;
+                    }
+
+                    const confirmed = confirm(`${operation.toUpperCase()} ${this.selectedDevices.length} selected devices?\n\nThis will run on Codex and continue even if you close your browser.`);
+                    if (!confirmed) return;
+
+                    try {
+                        // Build device list from selected
+                        const deviceList = this.devices
+                            .filter(d => this.selectedDevices.includes(d.name))
+                            .map(d => ({
+                                instance: d.instance,
+                                name: d.yaml_filename || d.name
+                            }));
+
+                        // Start bulk operation
+                        const response = await fetch('/api/bulk-operation', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                operation: operation,
+                                devices: deviceList
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            // Show progress modal
+                            this.bulkProgress = {
+                                show: true,
+                                operationId: data.operation_id,
+                                operation: operation,
+                                status: 'running',
+                                total: deviceList.length,
+                                completed: 0,
+                                success: 0,
+                                failed: 0,
+                                inProgress: deviceList.length,
+                                results: [],
+                                pollInterval: null
+                            };
+
+                            // Start polling for progress
+                            this.pollBulkProgress();
+                        } else {
+                            alert('❌ Failed to start operation: ' + (data.error || 'Unknown error'));
+                        }
+                    } catch (error) {
+                        console.error('Error starting bulk operation:', error);
+                        alert('❌ Error: ' + error.message);
+                    }
+                },
+
+                async pollBulkProgress() {
+                    if (!this.bulkProgress.operationId) return;
+
+                    try {
+                        const response = await fetch(`/api/operations/${this.bulkProgress.operationId}/progress`);
+                        const data = await response.json();
+
+                        this.bulkProgress.completed = data.completed_count;
+                        this.bulkProgress.inProgress = data.in_progress_count;
+                        this.bulkProgress.success = data.operation.success_count || 0;
+                        this.bulkProgress.failed = data.operation.failure_count || 0;
+                        this.bulkProgress.status = data.operation.status;
+                        this.bulkProgress.results = data.results || [];
+
+                        // Continue polling if still running
+                        if (data.operation.status === 'running') {
+                            this.bulkProgress.pollInterval = setTimeout(() => this.pollBulkProgress(), 2000);
+                        } else {
+                            // Operation complete
+                            console.log('✅ Bulk operation completed');
+                        }
+                    } catch (error) {
+                        console.error('Error polling progress:', error);
+                        // Retry on error
+                        if (this.bulkProgress.status === 'running') {
+                            this.bulkProgress.pollInterval = setTimeout(() => this.pollBulkProgress(), 3000);
+                        }
+                    }
+                },
+
+                closeBulkProgress() {
+                    // Clear polling interval
+                    if (this.bulkProgress.pollInterval) {
+                        clearTimeout(this.bulkProgress.pollInterval);
+                    }
+                    this.bulkProgress.show = false;
+                    // Clear selection
+                    this.selectedDevices = [];
+                },
+
+                clearSelection() {
+                    this.selectedDevices = [];
+                },
+
+                toggleAll(checked) {
+                    if (checked) {
+                        this.selectedDevices = this.filteredDevices.map(d => d.name);
+                    } else {
+                        this.selectedDevices = [];
                     }
                 },
 

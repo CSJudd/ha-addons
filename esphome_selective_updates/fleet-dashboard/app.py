@@ -17,7 +17,7 @@ Author: Chris Judd
 License: MIT
 """
 
-from flask import Flask, render_template, jsonify, request, send_from_directory
+from flask import Flask, render_template, jsonify, request, send_from_directory, Response, stream_with_context
 from pathlib import Path
 import json
 import subprocess
@@ -30,6 +30,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 import aioesphomeapi
+import threading
+import time
 
 # Add custom YAML constructors to handle ESPHome directives
 def include_constructor(loader, node):
@@ -655,6 +657,60 @@ def compile_device(instance, device_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/device/<instance>/<device_name>/compile/stream', methods=['POST'])
+def compile_device_stream(instance, device_name):
+    """Compile device firmware with real-time streaming output"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    def generate():
+        try:
+            # Check if device has pinned ESPHome version
+            config_dir = Path(instance_config["config_dir"])
+            yaml_file = config_dir / f"{device_name}.yaml"
+
+            pinned_version = None
+            if yaml_file.exists():
+                with yaml_file.open() as f:
+                    config = yaml.safe_load(f)
+                    substitutions = config.get("substitutions", {})
+                    pinned_version = substitutions.get("esphome_version", "*")
+
+            # Build command
+            if pinned_version and pinned_version != "*":
+                cmd = ["docker", "run", "--rm",
+                       "-v", f"{config_dir}:/config",
+                       f"esphome/esphome:{pinned_version}",
+                       "compile", f"/config/{device_name}.yaml"]
+            else:
+                cmd = ["docker", "exec", instance_config["container"],
+                       "esphome", "compile", f"/config/{device_name}.yaml"]
+
+            # Start process with real-time output
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            # Stream output line by line
+            for line in iter(process.stdout.readline, ''):
+                if line:
+                    yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
+
+            process.wait()
+
+            # Send completion status
+            yield f"data: {json.dumps({'done': True, 'success': process.returncode == 0})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
 @app.route('/api/device/<instance>/<device_name>/upload', methods=['POST'])
 def upload_device(instance, device_name):
     """Upload firmware to device (OTA)"""
@@ -702,9 +758,63 @@ def upload_device(instance, device_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/device/<instance>/<device_name>/upload/stream', methods=['POST'])
+def upload_device_stream(instance, device_name):
+    """Upload firmware to device (OTA) with real-time streaming output"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    def generate():
+        try:
+            # Check if device has pinned ESPHome version
+            config_dir = Path(instance_config["config_dir"])
+            yaml_file = config_dir / f"{device_name}.yaml"
+
+            pinned_version = None
+            if yaml_file.exists():
+                with yaml_file.open() as f:
+                    config = yaml.safe_load(f)
+                    substitutions = config.get("substitutions", {})
+                    pinned_version = substitutions.get("esphome_version", "*")
+
+            # Build command
+            if pinned_version and pinned_version != "*":
+                cmd = ["docker", "run", "--rm", "--network", "host",
+                       "-v", f"{config_dir}:/config",
+                       f"esphome/esphome:{pinned_version}",
+                       "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
+            else:
+                cmd = ["docker", "exec", instance_config["container"],
+                       "esphome", "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
+
+            # Start process with real-time output
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            # Stream output line by line
+            for line in iter(process.stdout.readline, ''):
+                if line:
+                    yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
+
+            process.wait()
+
+            # Send completion status
+            yield f"data: {json.dumps({'done': True, 'success': process.returncode == 0})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
 @app.route('/api/device/<instance>/<device_name>/logs')
 def get_device_logs(instance, device_name):
-    """Get device logs (streaming)"""
+    """Get device logs (requires device to be online)"""
     instance_config = get_instance_config(instance)
     if not instance_config:
         return jsonify({"error": "Instance not found"}), 404
@@ -718,9 +828,23 @@ def get_device_logs(instance, device_name):
             timeout=10
         )
 
+        # Check if command succeeded
+        if result.returncode != 0:
+            error_output = result.stderr or result.stdout
+            # Check for common errors
+            if "Can't connect" in error_output or "timed out" in error_output:
+                return jsonify({"error": "Device is offline or unreachable"}), 503
+            return jsonify({
+                "error": "Failed to retrieve logs",
+                "output": error_output
+            }), 500
+
         return jsonify({
-            "logs": result.stdout
+            "success": True,
+            "logs": result.stdout or "No logs available"
         })
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Device connection timed out (device may be offline)"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1049,16 +1173,143 @@ def check_substitutions():
 # BULK OPERATIONS API
 # ============================================================================
 
+def execute_bulk_operation(operation_id: int, operation_type: str, device_list: List[Dict]):
+    """Execute bulk operation in background thread"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        success_count = 0
+        failure_count = 0
+
+        for device_info in device_list:
+            instance_slug = device_info.get("instance")
+            device_name = device_info.get("name")
+            start_time = datetime.now()
+
+            try:
+                # Get instance config
+                instance_config = get_instance_config(instance_slug)
+                if not instance_config:
+                    raise Exception(f"Instance {instance_slug} not found")
+
+                config_dir = Path(instance_config["config_dir"])
+                yaml_file = config_dir / f"{device_name}.yaml"
+
+                # Check for pinned version
+                pinned_version = None
+                if yaml_file.exists():
+                    with yaml_file.open() as f:
+                        config = yaml.safe_load(f)
+                        substitutions = config.get("substitutions", {})
+                        pinned_version = substitutions.get("esphome_version", "*")
+
+                # Build command based on operation type
+                if pinned_version and pinned_version != "*":
+                    cmd = ["docker", "run", "--rm"]
+                    if operation_type == "upload":
+                        cmd.append("--network")
+                        cmd.append("host")
+                    cmd.extend([
+                        "-v", f"{config_dir}:/config",
+                        f"esphome/esphome:{pinned_version}",
+                        operation_type, f"/config/{device_name}.yaml"
+                    ])
+                    if operation_type == "upload":
+                        cmd.extend(["--device", "OTA"])
+                else:
+                    cmd = ["docker", "exec", instance_config["container"],
+                           "esphome", operation_type, f"/config/{device_name}.yaml"]
+                    if operation_type == "upload":
+                        cmd.extend(["--device", "OTA"])
+
+                # Execute command
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+
+                end_time = datetime.now()
+                duration = int((end_time - start_time).total_seconds())
+
+                if result.returncode == 0:
+                    success_count += 1
+                    status = "success"
+                    error_msg = None
+                else:
+                    failure_count += 1
+                    status = "failed"
+                    error_msg = result.stderr[:500] if result.stderr else "Unknown error"
+
+                # Store result
+                c.execute('''
+                    INSERT INTO fleet_manager.operation_results
+                    (operation_id, device_name, instance, status, error_message, output, started_at, completed_at, duration_seconds)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (operation_id, device_name, instance_slug, status, error_msg,
+                      (result.stdout + result.stderr)[:1000], start_time, end_time, duration))
+                conn.commit()
+
+            except Exception as e:
+                failure_count += 1
+                end_time = datetime.now()
+                duration = int((end_time - start_time).total_seconds())
+
+                # Store error
+                c.execute('''
+                    INSERT INTO fleet_manager.operation_results
+                    (operation_id, device_name, instance, status, error_message, started_at, completed_at, duration_seconds)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (operation_id, device_name, instance_slug, "failed", str(e)[:500], start_time, end_time, duration))
+                conn.commit()
+
+        # Update operation status
+        c.execute('''
+            UPDATE fleet_manager.operations
+            SET status = 'completed', success_count = %s, failure_count = %s, completed_at = NOW()
+            WHERE id = %s
+        ''', (success_count, failure_count, operation_id))
+        conn.commit()
+
+        print(f"✅ Bulk operation {operation_id} completed: {success_count} success, {failure_count} failed")
+
+    except Exception as e:
+        print(f"❌ Bulk operation {operation_id} failed: {e}")
+        if conn:
+            try:
+                c.execute('''
+                    UPDATE fleet_manager.operations
+                    SET status = 'failed', completed_at = NOW()
+                    WHERE id = %s
+                ''', (operation_id,))
+                conn.commit()
+            except:
+                pass
+    finally:
+        if conn:
+            conn.close()
+
 @app.route('/api/bulk-operation', methods=['POST'])
 def start_bulk_operation():
     """Start a bulk operation (compile/upload/validate) on multiple devices"""
     try:
         data = request.json
         operation_type = data.get("operation")  # compile, upload, validate
-        device_list = data.get("devices", [])  # List of {instance, name}
+        device_list = data.get("devices", [])  # List of {instance, name, yaml_filename}
 
         if not operation_type or not device_list:
             return jsonify({"error": "Missing operation or devices"}), 400
+
+        # Normalize device list to use yaml_filename
+        normalized_devices = []
+        for device in device_list:
+            normalized_devices.append({
+                "instance": device.get("instance"),
+                "name": device.get("yaml_filename") or device.get("name")
+            })
 
         # Create operation log in database
         conn = get_db_connection()
@@ -1068,15 +1319,75 @@ def start_bulk_operation():
             (operation_type, device_count, status, triggered_by)
             VALUES (%s, %s, 'running', 'web-ui')
             RETURNING id
-        ''', (operation_type, len(device_list)))
+        ''', (operation_type, len(normalized_devices)))
         operation_id = c.fetchone()[0]
         conn.commit()
         conn.close()
 
+        # Start background thread to execute operation
+        thread = threading.Thread(
+            target=execute_bulk_operation,
+            args=(operation_id, operation_type, normalized_devices),
+            daemon=True
+        )
+        thread.start()
+
         return jsonify({
             "success": True,
             "operation_id": operation_id,
-            "message": f"Started {operation_type} on {len(device_list)} devices"
+            "message": f"Started {operation_type} on {len(normalized_devices)} devices"
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/operations/<int:operation_id>/progress')
+def get_operation_progress(operation_id):
+    """Get real-time progress of a running operation"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get operation info
+        c.execute('''
+            SELECT id, operation_type, device_count, success_count, failure_count,
+                   started_at, completed_at, status
+            FROM fleet_manager.operations
+            WHERE id = %s
+        ''', (operation_id,))
+        operation = c.fetchone()
+
+        if not operation:
+            return jsonify({"error": "Operation not found"}), 404
+
+        # Get completed device results
+        c.execute('''
+            SELECT device_name, instance, status, error_message, completed_at
+            FROM fleet_manager.operation_results
+            WHERE operation_id = %s
+            ORDER BY completed_at DESC
+        ''', (operation_id,))
+        results = c.fetchall()
+        conn.close()
+
+        # Convert timestamps
+        if operation['started_at']:
+            operation['started_at'] = operation['started_at'].isoformat()
+        if operation['completed_at']:
+            operation['completed_at'] = operation['completed_at'].isoformat()
+
+        for result in results:
+            if result['completed_at']:
+                result['completed_at'] = result['completed_at'].isoformat()
+
+        completed_count = len(results)
+        in_progress_count = operation['device_count'] - completed_count
+
+        return jsonify({
+            "operation": operation,
+            "completed_count": completed_count,
+            "in_progress_count": in_progress_count,
+            "results": results
         })
 
     except Exception as e:

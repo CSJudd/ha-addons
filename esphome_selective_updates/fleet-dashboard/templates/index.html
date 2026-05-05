@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en" x-data="fleetManager()" x-init="init()">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESPHome Fleet Manager</title>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Header -->
+    <div class="bg-blue-600 text-white shadow-lg">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-2xl font-bold">🚀 ESPHome Fleet Manager</h1>
+                    <p class="text-blue-100 text-sm">Codex Production & Lab</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button @click="refreshDevices()"
+                            class="px-4 py-2 bg-blue-500 hover:bg-blue-400 rounded-lg transition">
+                        🔄 Refresh
+                    </button>
+                    <div class="text-sm">
+                        <span x-text="devices.length"></span> devices
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="container mx-auto px-4 py-6">
+        <!-- Stats Bar -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div class="bg-white rounded-lg shadow p-4">
+                <div class="text-gray-500 text-sm">Total Devices</div>
+                <div class="text-3xl font-bold text-gray-800" x-text="devices.length"></div>
+            </div>
+            <div class="bg-green-50 rounded-lg shadow p-4">
+                <div class="text-green-600 text-sm">Online</div>
+                <div class="text-3xl font-bold text-green-700" x-text="stats.online"></div>
+            </div>
+            <div class="bg-red-50 rounded-lg shadow p-4">
+                <div class="text-red-600 text-sm">Offline</div>
+                <div class="text-3xl font-bold text-red-700" x-text="stats.offline"></div>
+            </div>
+            <div class="bg-yellow-50 rounded-lg shadow p-4">
+                <div class="text-yellow-600 text-sm">Updates Available</div>
+                <div class="text-3xl font-bold text-yellow-700" x-text="stats.updates"></div>
+            </div>
+        </div>
+
+        <!-- Filters & Search -->
+        <div class="bg-white rounded-lg shadow p-4 mb-6">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <!-- Search -->
+                <div>
+                    <input type="text"
+                           x-model="search"
+                           @input.debounce.300ms="filterDevices()"
+                           placeholder="🔍 Search devices..."
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                </div>
+
+                <!-- Instance Filter -->
+                <div>
+                    <select x-model="filters.instance"
+                            @change="filterDevices()"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="">All Instances</option>
+                        <option value="production">Production</option>
+                        <option value="lab">Lab</option>
+                    </select>
+                </div>
+
+                <!-- Type Filter -->
+                <div>
+                    <select x-model="filters.type"
+                            @change="filterDevices()"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="">All Types</option>
+                        <template x-for="type in deviceTypes" :key="type">
+                            <option :value="type" x-text="type"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <!-- Group By -->
+                <div>
+                    <select x-model="groupBy"
+                            @change="updateView()"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="none">No Grouping</option>
+                        <option value="type">Group by Type</option>
+                        <option value="instance">Group by Instance</option>
+                        <option value="status">Group by Status</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Bulk Actions -->
+            <div class="mt-4 flex items-center justify-between" x-show="selectedDevices.length > 0">
+                <div class="text-sm text-gray-600">
+                    <span x-text="selectedDevices.length"></span> devices selected
+                </div>
+                <div class="flex space-x-2">
+                    <button @click="bulkUpdate()"
+                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                        ⚡ Update Selected
+                    </button>
+                    <button @click="clearSelection()"
+                            class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                        Clear
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Device List -->
+        <div class="bg-white rounded-lg shadow">
+            <!-- Loading State -->
+            <div x-show="loading" class="p-8 text-center text-gray-500">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                Loading devices...
+            </div>
+
+            <!-- Devices Table -->
+            <div x-show="!loading" x-cloak>
+                <template x-if="groupBy === 'none'">
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-50 border-b">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                        <input type="checkbox"
+                                               @change="toggleAll($event.target.checked)"
+                                               class="rounded">
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Version</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <template x-for="device in filteredDevices" :key="device.name">
+                                    <tr class="hover:bg-gray-50 transition">
+                                        <td class="px-4 py-3">
+                                            <input type="checkbox"
+                                                   :value="device.name"
+                                                   x-model="selectedDevices"
+                                                   class="rounded">
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <div class="font-medium text-gray-900" x-text="device.name"></div>
+                                            <div class="text-xs text-gray-500" x-text="device.ip_address || 'mDNS'"></div>
+                                        </td>
+                                        <td class="px-4 py-3 text-sm text-gray-700" x-text="device.device_type"></td>
+                                        <td class="px-4 py-3">
+                                            <span class="px-2 py-1 text-xs rounded-full"
+                                                  :class="device.instance === 'production' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
+                                                  x-text="device.instance"></span>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <span class="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700"
+                                                  x-text="device.status"></span>
+                                        </td>
+                                        <td class="px-4 py-3 text-sm text-gray-700" x-text="device.deployed_version || 'unknown'"></td>
+                                        <td class="px-4 py-3">
+                                            <button @click="updateDevice(device)"
+                                                    class="text-blue-600 hover:text-blue-800 text-sm">
+                                                Update
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </template>
+
+                <!-- Grouped View -->
+                <template x-if="groupBy !== 'none'">
+                    <div class="p-4">
+                        <template x-for="(group, key) in groupedDevices" :key="key">
+                            <div class="mb-6">
+                                <div class="flex items-center justify-between mb-2 cursor-pointer"
+                                     @click="toggleGroup(key)">
+                                    <h3 class="text-lg font-semibold text-gray-800">
+                                        <span x-text="key"></span>
+                                        <span class="text-sm text-gray-500 ml-2">(<span x-text="group.length"></span>)</span>
+                                    </h3>
+                                    <span x-text="expandedGroups.includes(key) ? '▼' : '▶'" class="text-gray-400"></span>
+                                </div>
+                                <div x-show="expandedGroups.includes(key)" class="ml-4">
+                                    <template x-for="device in group" :key="device.name">
+                                        <div class="py-2 px-4 hover:bg-gray-50 rounded flex items-center justify-between">
+                                            <div class="flex items-center space-x-4">
+                                                <input type="checkbox"
+                                                       :value="device.name"
+                                                       x-model="selectedDevices"
+                                                       class="rounded">
+                                                <div>
+                                                    <div class="font-medium" x-text="device.name"></div>
+                                                    <div class="text-xs text-gray-500" x-text="device.device_type"></div>
+                                                </div>
+                                            </div>
+                                            <button @click="updateDevice(device)"
+                                                    class="text-blue-600 hover:text-blue-800 text-sm">
+                                                Update
+                                            </button>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <!-- Empty State -->
+                <div x-show="filteredDevices.length === 0" class="p-8 text-center text-gray-500">
+                    No devices found matching your filters.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alpine.js Data -->
+    <script>
+        function fleetManager() {
+            return {
+                devices: [],
+                filteredDevices: [],
+                deviceTypes: [],
+                selectedDevices: [],
+                expandedGroups: [],
+                loading: true,
+                search: '',
+                filters: {
+                    instance: '',
+                    type: '',
+                    status: ''
+                },
+                groupBy: 'none',
+                stats: {
+                    online: 0,
+                    offline: 0,
+                    updates: 0
+                },
+
+                async init() {
+                    await this.loadDevices();
+                    await this.loadDeviceTypes();
+                },
+
+                async loadDevices() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/devices');
+                        const data = await response.json();
+                        this.devices = data.devices;
+                        this.filterDevices();
+                    } catch (error) {
+                        console.error('Error loading devices:', error);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                async loadDeviceTypes() {
+                    try {
+                        const response = await fetch('/api/devices/types');
+                        this.deviceTypes = await response.json();
+                    } catch (error) {
+                        console.error('Error loading device types:', error);
+                    }
+                },
+
+                filterDevices() {
+                    let filtered = this.devices;
+
+                    // Search filter
+                    if (this.search) {
+                        const searchLower = this.search.toLowerCase();
+                        filtered = filtered.filter(d =>
+                            d.name.toLowerCase().includes(searchLower) ||
+                            d.device_type.toLowerCase().includes(searchLower)
+                        );
+                    }
+
+                    // Instance filter
+                    if (this.filters.instance) {
+                        filtered = filtered.filter(d => d.instance === this.filters.instance);
+                    }
+
+                    // Type filter
+                    if (this.filters.type) {
+                        filtered = filtered.filter(d => d.device_type === this.filters.type);
+                    }
+
+                    this.filteredDevices = filtered;
+                    this.updateView();
+                },
+
+                get groupedDevices() {
+                    if (this.groupBy === 'none') return {};
+
+                    const grouped = {};
+                    this.filteredDevices.forEach(device => {
+                        const key = device[this.groupBy === 'type' ? 'device_type' : this.groupBy];
+                        if (!grouped[key]) grouped[key] = [];
+                        grouped[key].push(device);
+                    });
+                    return grouped;
+                },
+
+                toggleGroup(key) {
+                    const index = this.expandedGroups.indexOf(key);
+                    if (index > -1) {
+                        this.expandedGroups.splice(index, 1);
+                    } else {
+                        this.expandedGroups.push(key);
+                    }
+                },
+
+                toggleAll(checked) {
+                    if (checked) {
+                        this.selectedDevices = this.filteredDevices.map(d => d.name);
+                    } else {
+                        this.selectedDevices = [];
+                    }
+                },
+
+                clearSelection() {
+                    this.selectedDevices = [];
+                },
+
+                async updateDevice(device) {
+                    alert(`Update ${device.name} - Coming soon!`);
+                },
+
+                async bulkUpdate() {
+                    if (confirm(`Update ${this.selectedDevices.length} devices?`)) {
+                        alert('Bulk update - Coming soon!');
+                    }
+                },
+
+                async refreshDevices() {
+                    await this.loadDevices();
+                },
+
+                updateView() {
+                    // Expand all groups by default in grouped view
+                    if (this.groupBy !== 'none') {
+                        this.expandedGroups = Object.keys(this.groupedDevices);
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

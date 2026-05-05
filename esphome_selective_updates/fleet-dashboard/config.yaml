@@ -1,0 +1,26 @@
+# ESPHome Fleet Manager - Configuration
+
+instances:
+  - name: "Production"
+    slug: "production"
+    config_dir: "/opt/data-services/esphome/production"
+    container: "codex-esphome-production"
+    dashboard_url: "https://codex:6052"
+    enabled: true
+
+  - name: "Lab"
+    slug: "lab"
+    config_dir: "/opt/data-services/esphome/lab"
+    container: "codex-esphome-lab"
+    dashboard_url: "https://codex:6054"
+    enabled: true
+
+updater:
+  script_path: "/opt/esphome-updater/esphome_selective_updates/standalone/esphome-updater"
+  config_template: "/opt/esphome-updater/esphome_selective_updates/standalone/config-production.yaml"
+
+database: "/var/lib/esphome-fleet/fleet.db"
+
+server:
+  host: "0.0.0.0"
+  port: 8080

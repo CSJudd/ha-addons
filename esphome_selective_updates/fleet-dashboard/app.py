@@ -29,12 +29,17 @@ from psycopg2.extras import RealDictCursor
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Add custom YAML constructor to handle ESPHome's !include directive
+# Add custom YAML constructors to handle ESPHome directives
 def include_constructor(loader, node):
     """Dummy constructor for !include - just return empty dict"""
     return {}
 
+def lambda_constructor(loader, node):
+    """Dummy constructor for !lambda - just return empty string"""
+    return ""
+
 yaml.add_constructor('!include', include_constructor, Loader=yaml.SafeLoader)
+yaml.add_constructor('!lambda', lambda_constructor, Loader=yaml.SafeLoader)
 
 app = Flask(__name__)
 

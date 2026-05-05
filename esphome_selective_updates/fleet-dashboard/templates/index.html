@@ -879,15 +879,15 @@
                                 class="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center justify-center">
                             <span class="mr-2">✓</span> Validate
                         </button>
-                        <button @click="openNativeDashboard()"
+                        <button @click="deviceAction('compile')"
                                 class="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center justify-center">
                             <span class="mr-2">⚙️</span> Compile Only
                         </button>
-                        <button @click="openNativeDashboard()"
+                        <button @click="deviceAction('upload')"
                                 class="px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center justify-center">
                             <span class="mr-2">📡</span> OTA (Compile/Flash)
                         </button>
-                        <button @click="openNativeDashboard()"
+                        <button @click="compileAndDownload()"
                                 class="px-4 py-3 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition flex items-center justify-center">
                             <span class="mr-2">💾</span> Download (Compile/Save)
                         </button>
@@ -1399,6 +1399,74 @@
                     } finally {
                         this.deviceModal.loading = false;
                     }
+                },
+
+                async compileAndDownload() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    this.deviceModal.loading = true;
+                    this.deviceModal.output = 'Starting compile for firmware download...\n\n';
+
+                    const deviceName = device.yaml_filename || device.name;
+
+                    // Use WebSocket to compile
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws/compile`;
+                    const ws = new WebSocket(wsUrl);
+
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({
+                            type: 'spawn',
+                            instance: device.instance,
+                            device: deviceName
+                        }));
+                    };
+
+                    ws.onmessage = async (event) => {
+                        const data = JSON.parse(event.data);
+
+                        if (data.type === 'line') {
+                            this.deviceModal.output += data.data + '\n';
+                        } else if (data.type === 'exit') {
+                            ws.close();
+                            this.deviceModal.loading = false;
+
+                            if (data.code === 0) {
+                                this.deviceModal.output += '\n✅ Compile completed successfully!\n\n🔍 Verifying firmware...\n';
+
+                                // Download firmware
+                                const firmwareUrl = `/api/device/${device.instance}/${deviceName}/firmware`;
+                                const response = await fetch(firmwareUrl);
+
+                                if (response.ok) {
+                                    this.deviceModal.output += '✅ Firmware ready! Starting download...\n';
+                                    window.open(firmwareUrl, '_blank');
+                                } else {
+                                    const errorData = await response.json();
+                                    this.deviceModal.output += `\n❌ Firmware not found: ${errorData.error || 'Unknown error'}`;
+                                }
+                            } else {
+                                this.deviceModal.output += `\n❌ Compile failed with exit code ${data.code}`;
+                            }
+                        } else if (data.type === 'error') {
+                            this.deviceModal.output += `\n❌ Error: ${data.data}`;
+                            ws.close();
+                            this.deviceModal.loading = false;
+                        }
+                    };
+
+                    ws.onerror = (error) => {
+                        this.deviceModal.output += '\n❌ WebSocket connection error';
+                        this.deviceModal.loading = false;
+                    };
+
+                    ws.onclose = (event) => {
+                        if (this.deviceModal.loading) {
+                            this.deviceModal.output += '\n❌ Connection closed unexpectedly';
+                            this.deviceModal.loading = false;
+                        }
+                    };
                 },
 
                 async downloadFirmware() {

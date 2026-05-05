@@ -1369,8 +1369,39 @@
                                     this.deviceModal.output = 'Starting compile for firmware download...\n\n';
                                     this.deviceModal.loading = true;
 
-                                    // Use the compile action
-                                    await this.deviceAction('compile');
+                                    // Wait for compile to complete using EventSource
+                                    await new Promise((resolve, reject) => {
+                                        const streamUrl = `/api/device/${device.instance}/${deviceName}/compile/stream`;
+                                        const eventSource = new EventSource(streamUrl);
+
+                                        eventSource.onmessage = (event) => {
+                                            const data = JSON.parse(event.data);
+
+                                            if (data.line) {
+                                                this.deviceModal.output += data.line + '\n';
+                                            } else if (data.done) {
+                                                eventSource.close();
+                                                this.deviceModal.loading = false;
+                                                if (data.success) {
+                                                    resolve(true);
+                                                } else {
+                                                    reject(new Error('Compile failed'));
+                                                }
+                                            } else if (data.error) {
+                                                this.deviceModal.output += `\n❌ Error: ${data.error}`;
+                                                eventSource.close();
+                                                this.deviceModal.loading = false;
+                                                reject(new Error(data.error));
+                                            }
+                                        };
+
+                                        eventSource.onerror = (error) => {
+                                            this.deviceModal.output += '\n❌ Connection error';
+                                            eventSource.close();
+                                            this.deviceModal.loading = false;
+                                            reject(new Error('Connection error'));
+                                        };
+                                    });
 
                                     // After compile, verify firmware exists before downloading
                                     this.deviceModal.output += '\n\n🔍 Verifying firmware file...\n';
@@ -1398,6 +1429,7 @@
                     } catch (error) {
                         console.error('Download error:', error);
                         alert('❌ Error: ' + error.message);
+                        this.deviceModal.loading = false;
                     }
                 },
 

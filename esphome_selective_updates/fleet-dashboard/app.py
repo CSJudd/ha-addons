@@ -677,40 +677,91 @@ def compile_device_stream(instance, device_name):
                     substitutions = config.get("substitutions", {})
                     pinned_version = substitutions.get("esphome_version", "*")
 
-            # Build command with unbuffered output using stdbuf
+            # Build command
             if pinned_version and pinned_version != "*":
-                cmd = ["stdbuf", "-oL", "-eL",
-                       "docker", "run", "--rm",
+                cmd = ["docker", "run", "--rm", "-it",
                        "-e", "PYTHONUNBUFFERED=1",
                        "-v", f"{config_dir}:/config",
                        f"esphome/esphome:{pinned_version}",
                        "compile", f"/config/{device_name}.yaml"]
             else:
-                cmd = ["stdbuf", "-oL", "-eL",
-                       "docker", "exec",
+                cmd = ["docker", "exec", "-it",
                        "-e", "PYTHONUNBUFFERED=1",
                        instance_config["container"],
                        "esphome", "compile", f"/config/{device_name}.yaml"]
 
-            # Start process with real-time output
+            # Use pty to force unbuffered output
+            import pty
             import os
-            env = os.environ.copy()
-            env['PYTHONUNBUFFERED'] = '1'
+            import fcntl
+
+            master_fd, slave_fd = pty.openpty()
 
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=0,  # Completely unbuffered
-                env=env
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True
             )
 
-            # Stream output line by line
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
+            os.close(slave_fd)
 
+            # Set non-blocking
+            flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+            fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+            # Read output in real-time
+            import select
+            import time
+
+            output_buffer = b""
+            last_yield = time.time()
+
+            while process.poll() is None:
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+
+                if ready:
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                        if chunk:
+                            output_buffer += chunk
+                            # Yield complete lines
+                            while b'\n' in output_buffer:
+                                line, output_buffer = output_buffer.split(b'\n', 1)
+                                try:
+                                    line_str = line.decode('utf-8', errors='replace').rstrip()
+                                    if line_str:
+                                        yield f"data: {json.dumps({'line': line_str})}\n\n"
+                                        last_yield = time.time()
+                                except Exception:
+                                    pass
+                    except OSError:
+                        pass
+
+                # Keepalive every 10 seconds
+                if time.time() - last_yield > 10:
+                    yield f": keepalive\n\n"
+                    last_yield = time.time()
+
+            # Read any remaining output
+            try:
+                while True:
+                    chunk = os.read(master_fd, 4096)
+                    if not chunk:
+                        break
+                    output_buffer += chunk
+            except OSError:
+                pass
+
+            # Yield final lines
+            if output_buffer:
+                for line in output_buffer.decode('utf-8', errors='replace').split('\n'):
+                    line_str = line.rstrip()
+                    if line_str:
+                        yield f"data: {json.dumps({'line': line_str})}\n\n"
+
+            os.close(master_fd)
             process.wait()
 
             # Send completion status

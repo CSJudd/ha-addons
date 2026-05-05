@@ -45,7 +45,7 @@
                         🔄 Refresh
                     </button>
                     <div class="text-sm">
-                        <span x-text="devices.length"></span> devices
+                        <span x-text="filteredDevices.length"></span> devices
                     </div>
                 </div>
             </div>
@@ -58,7 +58,7 @@
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <div class="bg-white rounded-lg shadow p-4">
                 <div class="text-gray-500 text-sm">Total Devices</div>
-                <div class="text-3xl font-bold text-gray-800" x-text="devices.length"></div>
+                <div class="text-3xl font-bold text-gray-800" x-text="filteredDevices.length"></div>
             </div>
             <div class="bg-green-50 rounded-lg shadow p-4">
                 <div class="text-green-600 text-sm">Online</div>
@@ -342,6 +342,12 @@
                     }
 
                     this.filteredDevices = filtered;
+
+                    // Calculate stats from filtered devices
+                    this.stats.online = filtered.filter(d => d.status === 'online').length;
+                    this.stats.offline = filtered.filter(d => d.status === 'offline').length;
+                    this.stats.updates = filtered.filter(d => d.update_available).length;
+
                     this.updateView();
                 },
 

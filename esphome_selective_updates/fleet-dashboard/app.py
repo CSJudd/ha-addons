@@ -231,6 +231,34 @@ def discover_devices(instance: Dict) -> List[Dict]:
             if "manual_ip" in wifi_config:
                 ip = wifi_config["manual_ip"].get("static_ip")
 
+            # Try to read device info from .esphome storage
+            storage_json = config_dir / ".esphome" / "storage" / f"{yaml_file.name}.json"
+            deployed_version = None
+            status = "unknown"
+
+            if storage_json.exists():
+                try:
+                    with storage_json.open() as f:
+                        storage_data = json.load(f)
+                        deployed_version = storage_data.get("esphome_version")
+                        # Use IP from storage if not in YAML
+                        if not ip:
+                            ip = storage_data.get("address")
+                except Exception as e:
+                    print(f"Error reading storage for {name}: {e}")
+
+            # Simple ping check for status (with 1s timeout)
+            if ip:
+                try:
+                    result = subprocess.run(
+                        ["ping", "-c", "1", "-W", "1", ip],
+                        capture_output=True,
+                        timeout=2
+                    )
+                    status = "online" if result.returncode == 0 else "offline"
+                except:
+                    status = "offline"
+
             devices.append({
                 "instance": instance["slug"],
                 "name": name,
@@ -239,9 +267,10 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 "room": room,
                 "ip_address": ip,
                 "config_file": yaml_file.name,
-                "status": "unknown",
-                "deployed_version": None,
-                "current_version": None
+                "status": status,
+                "deployed_version": deployed_version,
+                "current_version": None,
+                "update_available": False
             })
 
         except Exception as e:

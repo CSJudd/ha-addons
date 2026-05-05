@@ -463,29 +463,33 @@ class CompileWebSocketHandler(BaseWebSocketHandler):
                 cmd = ["docker", "exec", instance_config["container"],
                        "esphome", "compile", f"/config/{device_name}.yaml"]
 
-            # Start subprocess
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1  # Line buffered
+            # Start async subprocess
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
             )
 
             # Stream output line by line
             while True:
-                line = process.stdout.readline()
+                line = await process.stdout.readline()
                 if not line:
                     break
 
                 # Send line to client
-                await self.write_message(json.dumps({
-                    "type": "line",
-                    "data": line.rstrip()
-                }))
+                try:
+                    await self.write_message(json.dumps({
+                        "type": "line",
+                        "data": line.decode().rstrip()
+                    }))
+                except tornado.websocket.WebSocketClosedError:
+                    # Client disconnected, kill the process
+                    process.kill()
+                    await process.wait()
+                    return
 
             # Wait for process to finish
-            process.wait()
+            await process.wait()
 
             # Send completion message
             await self.write_message(json.dumps({
@@ -493,11 +497,17 @@ class CompileWebSocketHandler(BaseWebSocketHandler):
                 "code": process.returncode
             }))
 
+        except tornado.websocket.WebSocketClosedError:
+            # Client disconnected
+            pass
         except Exception as e:
-            await self.write_message(json.dumps({
-                "type": "error",
-                "data": str(e)
-            }))
+            try:
+                await self.write_message(json.dumps({
+                    "type": "error",
+                    "data": str(e)
+                }))
+            except tornado.websocket.WebSocketClosedError:
+                pass
 
 # ============================================================================
 # UPLOAD WEBSOCKET HANDLER
@@ -567,29 +577,33 @@ class UploadWebSocketHandler(BaseWebSocketHandler):
                 cmd = ["docker", "exec", instance_config["container"],
                        "esphome", "run", f"/config/{device_name}.yaml", "--device", "OTA"]
 
-            # Start subprocess
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1  # Line buffered
+            # Start async subprocess
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
             )
 
             # Stream output line by line
             while True:
-                line = process.stdout.readline()
+                line = await process.stdout.readline()
                 if not line:
                     break
 
                 # Send line to client
-                await self.write_message(json.dumps({
-                    "type": "line",
-                    "data": line.rstrip()
-                }))
+                try:
+                    await self.write_message(json.dumps({
+                        "type": "line",
+                        "data": line.decode().rstrip()
+                    }))
+                except tornado.websocket.WebSocketClosedError:
+                    # Client disconnected, kill the process
+                    process.kill()
+                    await process.wait()
+                    return
 
             # Wait for process to finish
-            process.wait()
+            await process.wait()
 
             # Send completion message
             await self.write_message(json.dumps({
@@ -597,11 +611,17 @@ class UploadWebSocketHandler(BaseWebSocketHandler):
                 "code": process.returncode
             }))
 
+        except tornado.websocket.WebSocketClosedError:
+            # Client disconnected
+            pass
         except Exception as e:
-            await self.write_message(json.dumps({
-                "type": "error",
-                "data": str(e)
-            }))
+            try:
+                await self.write_message(json.dumps({
+                    "type": "error",
+                    "data": str(e)
+                }))
+            except tornado.websocket.WebSocketClosedError:
+                pass
 
 # ============================================================================
 # REST API HANDLERS
@@ -670,7 +690,7 @@ class DeviceTypesHandler(tornado.web.RequestHandler):
             devices = discover_devices(instance)
             types.update(d["device_type"] for d in devices)
 
-        self.write(sorted(list(types)))
+        self.write({"types": sorted(list(types))})
 
 class StatsHandler(tornado.web.RequestHandler):
     """Get fleet statistics"""

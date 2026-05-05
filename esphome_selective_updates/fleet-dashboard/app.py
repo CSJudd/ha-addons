@@ -236,12 +236,17 @@ def discover_devices(instance: Dict) -> List[Dict]:
             with yaml_file.open() as f:
                 config = yaml.safe_load(f)
 
+            # Extract substitutions first (needed for name resolution)
+            substitutions = config.get("substitutions", {})
+
             # Extract device info from YAML
             esphome_config = config.get("esphome", {})
             name = esphome_config.get("name") or yaml_file.stem
 
-            # Extract substitutions for area
-            substitutions = config.get("substitutions", {})
+            # Resolve substitution variables (e.g., ${name})
+            if isinstance(name, str) and name.startswith("${") and name.endswith("}"):
+                sub_var = name[2:-1]  # Extract variable name
+                name = substitutions.get(sub_var, yaml_file.stem)
             area = substitutions.get("area", "Unknown")
 
             # Extract device type from name pattern

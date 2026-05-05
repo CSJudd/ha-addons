@@ -63,7 +63,7 @@
                         class="py-4 px-1 border-b-2 font-medium text-sm">
                     📱 Devices
                 </button>
-                <button @click="activeTab = 'common'"
+                <button @click="activeTab = 'common'; loadCommonFiles()"
                         :class="activeTab === 'common' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
                         class="py-4 px-1 border-b-2 font-medium text-sm">
                     📁 Common Files
@@ -927,15 +927,6 @@
                         }
                     } catch (error) {
                         console.error('Error loading HA versions:', error);
-                    }
-                },
-
-                // Watch for tab changes
-                $watch: {
-                    activeTab(newTab) {
-                        if (newTab === 'common' && this.commonFiles.list.length === 0) {
-                            this.loadCommonFiles();
-                        }
                     }
                 }
             }

@@ -203,19 +203,23 @@ async def get_device_version_async(ip: str, password: str = "") -> Optional[str]
 
     try:
         cli = aioesphomeapi.APIClient(ip, 6053, password)
-        await cli.connect(login=True, timeout=5.0)
-        device_info = await cli.device_info()
+        # Use asyncio.wait_for to add timeout (older aioesphomeapi doesn't support timeout param)
+        await asyncio.wait_for(cli.connect(login=True), timeout=3.0)
+        device_info = await asyncio.wait_for(cli.device_info(), timeout=2.0)
         await cli.disconnect()
         return device_info.esphome_version
-    except Exception as e:
-        # Silently fail - device might be offline or API disabled
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        # Device unreachable or API not responding
+        return None
+    except Exception:
+        # Any other error (encryption, auth, etc.) - silently skip
         return None
 
 def get_device_version(ip: str) -> Optional[str]:
     """Wrapper to run async version query in sync context"""
     try:
         return asyncio.run(get_device_version_async(ip))
-    except:
+    except Exception:
         return None
 
 def discover_devices(instance: Dict) -> List[Dict]:

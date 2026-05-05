@@ -677,18 +677,15 @@ def compile_device_stream(instance, device_name):
                     substitutions = config.get("substitutions", {})
                     pinned_version = substitutions.get("esphome_version", "*")
 
-            # Build command with unbuffered output
+            # Build command with unbuffered output - use script to force PTY
             if pinned_version and pinned_version != "*":
-                cmd = ["docker", "run", "--rm",
-                       "-e", "PYTHONUNBUFFERED=1",
-                       "-v", f"{config_dir}:/config",
-                       f"esphome/esphome:{pinned_version}",
-                       "compile", f"/config/{device_name}.yaml"]
+                cmd = ["script", "-q", "-c",
+                       f"docker run --rm -e PYTHONUNBUFFERED=1 -v {config_dir}:/config esphome/esphome:{pinned_version} compile /config/{device_name}.yaml",
+                       "/dev/null"]
             else:
-                cmd = ["docker", "exec",
-                       "-e", "PYTHONUNBUFFERED=1",
-                       instance_config["container"],
-                       "esphome", "compile", f"/config/{device_name}.yaml"]
+                cmd = ["script", "-q", "-c",
+                       f"docker exec -e PYTHONUNBUFFERED=1 {instance_config['container']} esphome compile /config/{device_name}.yaml",
+                       "/dev/null"]
 
             # Start process with real-time output
             import os
@@ -789,18 +786,15 @@ def upload_device_stream(instance, device_name):
                     substitutions = config.get("substitutions", {})
                     pinned_version = substitutions.get("esphome_version", "*")
 
-            # Build command with unbuffered output
+            # Build command with unbuffered output - use script to force PTY
             if pinned_version and pinned_version != "*":
-                cmd = ["docker", "run", "--rm", "--network", "host",
-                       "-e", "PYTHONUNBUFFERED=1",
-                       "-v", f"{config_dir}:/config",
-                       f"esphome/esphome:{pinned_version}",
-                       "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
+                cmd = ["script", "-q", "-c",
+                       f"docker run --rm --network host -e PYTHONUNBUFFERED=1 -v {config_dir}:/config esphome/esphome:{pinned_version} upload /config/{device_name}.yaml --device OTA",
+                       "/dev/null"]
             else:
-                cmd = ["docker", "exec",
-                       "-e", "PYTHONUNBUFFERED=1",
-                       instance_config["container"],
-                       "esphome", "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
+                cmd = ["script", "-q", "-c",
+                       f"docker exec -e PYTHONUNBUFFERED=1 {instance_config['container']} esphome upload /config/{device_name}.yaml --device OTA",
+                       "/dev/null"]
 
             # Start process with real-time output
             import os

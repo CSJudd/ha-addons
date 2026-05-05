@@ -677,7 +677,7 @@ def compile_device_stream(instance, device_name):
                     substitutions = config.get("substitutions", {})
                     pinned_version = substitutions.get("esphome_version", "*")
 
-            # Build simple command - just make it work
+            # Build simple command
             if pinned_version and pinned_version != "*":
                 cmd = ["docker", "run", "--rm",
                        "-v", f"{config_dir}:/config",
@@ -687,22 +687,34 @@ def compile_device_stream(instance, device_name):
                 cmd = ["docker", "exec", instance_config["container"],
                        "esphome", "compile", f"/config/{device_name}.yaml"]
 
-            # Simple blocking compile - wait for completion, then return all output
-            result = subprocess.run(
+            # Run in background and send keepalives
+            import time
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=300
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
             )
 
-            # Send all output at once
-            output = result.stdout + result.stderr
+            last_keepalive = time.time()
+
+            # Poll process and send keepalives every 5 seconds
+            while process.poll() is None:
+                time.sleep(0.5)
+                if time.time() - last_keepalive > 5:
+                    yield f": keepalive\n\n"
+                    last_keepalive = time.time()
+
+            # Get all output
+            output, _ = process.communicate()
+
+            # Send all output
             for line in output.split('\n'):
                 if line.strip():
                     yield f"data: {json.dumps({'line': line})}\n\n"
 
             # Send completion status
-            yield f"data: {json.dumps({'done': True, 'success': result.returncode == 0})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'success': process.returncode == 0})}\n\n"
 
         except subprocess.TimeoutExpired:
             yield f"data: {json.dumps({'error': 'Compile timeout (5 minutes)'})}\n\n"

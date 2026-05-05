@@ -346,30 +346,8 @@ def discover_devices(instance: Dict) -> List[Dict]:
     online_count = sum(1 for d in devices if d["status"] == "online")
     print(f"  {online_count}/{len(devices)} devices online")
 
-    # Third pass: query running versions from online devices via ESPHome API
-    online_devices = [d for d in devices if d["status"] == "online"]
-    if online_devices:
-        print(f"Querying running versions from {len(online_devices)} online devices...")
-        with ThreadPoolExecutor(max_workers=50) as executor:
-            future_to_device = {
-                executor.submit(get_device_version, device["ip_address"]): device
-                for device in online_devices
-            }
-
-            for future in as_completed(future_to_device):
-                device = future_to_device[future]
-                try:
-                    running_version = future.result()
-                    if running_version:
-                        device["current_version"] = running_version
-                        # Check if update is available (compiled != running)
-                        if device["deployed_version"] and device["deployed_version"] != running_version:
-                            device["update_available"] = True
-                except Exception as e:
-                    print(f"Error querying version for {device['name']}: {e}")
-
-        version_count = sum(1 for d in online_devices if d.get("current_version"))
-        print(f"  Got versions from {version_count}/{len(online_devices)} devices")
+    # Note: ESPHome API version querying disabled - devices use encryption keys
+    # Use HA API integration instead for running versions
 
     return devices
 

@@ -589,6 +589,8 @@
                     await this.loadInstances();
                     await this.loadDevices();
                     await this.loadDeviceTypes();
+                    // Load HA versions in background
+                    this.loadHAVersions();
                 },
 
                 async loadInstances() {
@@ -893,19 +895,51 @@
                     this.commonFiles.modalOpen = false;
                     this.commonFiles.currentFile = '';
                     this.commonFiles.content = '';
+                },
+
+                // HA API Version Integration
+                async loadHAVersions() {
+                    const ha_url = 'http://haos.grid.foxrunn.net:8123';
+                    const ha_token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI3ZDlkZTU5YTc3NDc0OGI0OThjNmYwMTJjN2RjOTcxYiIsImlhdCI6MTc0MTY0MDA5MywiZXhwIjoyMDU3MDAwMDkzfQ.3HOXfKgN7-wkrQACzfPeqWJCVceGx1KY3aRwzuLtJBk';
+
+                    try {
+                        const response = await fetch('/api/ha/versions', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ha_url, ha_token})
+                        });
+
+                        const data = await response.json();
+
+                        if (data.versions) {
+                            // Update devices with HA versions
+                            this.devices.forEach(device => {
+                                const deviceName = device.name.replace(/-/g, '_');
+                                if (data.versions[deviceName]) {
+                                    device.current_version = data.versions[deviceName];
+                                    // Check if update available
+                                    if (device.deployed_version && device.deployed_version !== data.versions[deviceName]) {
+                                        device.update_available = true;
+                                    }
+                                }
+                            });
+                            console.log(`Loaded versions from HA for ${data.count} devices`);
+                        }
+                    } catch (error) {
+                        console.error('Error loading HA versions:', error);
+                    }
+                },
+
+                // Watch for tab changes
+                $watch: {
+                    activeTab(newTab) {
+                        if (newTab === 'common' && this.commonFiles.list.length === 0) {
+                            this.loadCommonFiles();
+                        }
+                    }
                 }
             }
         }
-
-        // Watch for tab changes to load common files
-        document.addEventListener('alpine:init', () => {
-            Alpine.effect(() => {
-                const manager = Alpine.raw(document.querySelector('[x-data]').__x.$data);
-                if (manager && manager.activeTab === 'common' && manager.commonFiles.list.length === 0) {
-                    manager.loadCommonFiles();
-                }
-            });
-        });
     </script>
 
     </script>

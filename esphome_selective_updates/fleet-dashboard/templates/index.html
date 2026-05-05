@@ -466,6 +466,97 @@
         <!-- Settings Tab -->
         <div x-show="activeTab === 'settings'">
             <div class="space-y-6">
+                <!-- Substitution Validation -->
+                <div class="bg-blue-50 border border-blue-200 rounded-lg">
+                    <div class="px-6 py-4">
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <span class="text-3xl">ℹ️</span>
+                            </div>
+                            <div class="ml-4 flex-1">
+                                <h3 class="text-lg font-semibold text-blue-900 mb-2">Required Substitutions</h3>
+                                <p class="text-sm text-blue-800 mb-3">
+                                    For the fleet manager to work properly, all device YAMLs should include these substitutions:
+                                </p>
+                                <ul class="text-sm text-blue-800 space-y-1 mb-4 list-disc list-inside">
+                                    <li><code class="bg-blue-100 px-2 py-0.5 rounded">device_type</code> - Device hardware type (e.g., "Sonoff S31", "Athom Switch")</li>
+                                    <li><code class="bg-blue-100 px-2 py-0.5 rounded">esphome_version</code> - ESPHome version pinning ("*" for latest, or "2026.4.3" for specific)</li>
+                                    <li><code class="bg-blue-100 px-2 py-0.5 rounded">area</code> - Physical location/room name for grouping</li>
+                                </ul>
+                                <div class="flex items-center space-x-4">
+                                    <button @click="checkSubstitutions()"
+                                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                                        🔍 Check All Devices
+                                    </button>
+                                    <span x-show="validationResults.loading" class="text-sm text-blue-700">
+                                        Scanning devices...
+                                    </span>
+                                    <span x-show="validationResults.checked" class="text-sm text-blue-700">
+                                        ✓ <span x-text="validationResults.compliant"></span> / <span x-text="validationResults.total"></span> devices compliant
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Validation Results -->
+                <div x-show="validationResults.checked && validationResults.issues.length > 0"
+                     class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b bg-yellow-50">
+                        <h3 class="text-lg font-semibold text-yellow-900">
+                            ⚠️ <span x-text="validationResults.issues.length"></span> Device(s) Need Attention
+                        </h3>
+                    </div>
+                    <div class="px-6 py-4 max-h-96 overflow-y-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 border-b sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Device</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Missing</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Current Substitutions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <template x-for="issue in validationResults.issues" :key="issue.device + issue.instance">
+                                    <tr class="hover:bg-gray-50">
+                                        <td class="px-4 py-3 font-mono text-xs" x-text="issue.device"></td>
+                                        <td class="px-4 py-3 text-xs" x-text="issue.instance"></td>
+                                        <td class="px-4 py-3">
+                                            <template x-if="issue.missing">
+                                                <div class="flex flex-wrap gap-1">
+                                                    <template x-for="sub in issue.missing" :key="sub">
+                                                        <span class="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded" x-text="sub"></span>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                            <template x-if="issue.error">
+                                                <span class="text-red-600 text-xs" x-text="'Error: ' + issue.error"></span>
+                                            </template>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <template x-if="issue.has && issue.has.length > 0">
+                                                <div class="flex flex-wrap gap-1">
+                                                    <template x-for="sub in issue.has" :key="sub">
+                                                        <span class="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded" x-text="sub"></span>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                            <template x-if="!issue.has || issue.has.length === 0">
+                                                <span class="text-gray-400 text-xs">None</span>
+                                            </template>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="px-6 py-4 border-t bg-gray-50 text-sm text-gray-600">
+                        💡 <strong>Tip:</strong> You can batch-update device YAMLs in another session to add missing substitutions based on device naming patterns.
+                    </div>
+                </div>
+
                 <!-- Home Assistant API Settings -->
                 <div class="bg-white rounded-lg shadow">
                     <div class="px-6 py-4 border-b">
@@ -805,6 +896,13 @@
                         upload_timeout: 300
                     },
                     instances: []
+                },
+                validationResults: {
+                    checked: false,
+                    loading: false,
+                    total: 0,
+                    compliant: 0,
+                    issues: []
                 },
 
                 async init() {
@@ -1213,6 +1311,34 @@
                         dashboard_url: 'https://localhost:6052',
                         enabled: true
                     });
+                },
+
+                async checkSubstitutions() {
+                    this.validationResults.loading = true;
+                    this.validationResults.checked = false;
+
+                    try {
+                        const response = await fetch('/api/check-substitutions');
+                        const data = await response.json();
+
+                        this.validationResults = {
+                            checked: true,
+                            loading: false,
+                            total: data.total_devices,
+                            compliant: data.compliant_devices,
+                            issues: data.issues || []
+                        };
+
+                        if (data.issues.length === 0) {
+                            alert('✅ All devices have required substitutions!');
+                        } else {
+                            console.log('Validation issues:', data);
+                        }
+                    } catch (error) {
+                        console.error('Error checking substitutions:', error);
+                        alert('❌ Error checking substitutions: ' + error.message);
+                        this.validationResults.loading = false;
+                    }
                 },
 
                 // ============================================================================

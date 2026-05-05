@@ -957,6 +957,68 @@ def update_config():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/check-substitutions')
+def check_substitutions():
+    """Check all device YAMLs for required substitutions"""
+    required_substitutions = ['device_type', 'esphome_version', 'area']
+    results = {
+        'total_devices': 0,
+        'compliant_devices': 0,
+        'issues': [],
+        'by_instance': {}
+    }
+
+    try:
+        for instance_config in CONFIG.get("instances", []):
+            if not instance_config.get("enabled"):
+                continue
+
+            instance_name = instance_config["name"]
+            config_dir = Path(instance_config["config_dir"])
+
+            if not config_dir.exists():
+                continue
+
+            instance_issues = []
+
+            for yaml_file in sorted(config_dir.glob("*.yaml")):
+                try:
+                    with yaml_file.open() as f:
+                        config = yaml.safe_load(f)
+
+                    substitutions = config.get("substitutions", {})
+                    missing = []
+
+                    for req_sub in required_substitutions:
+                        if req_sub not in substitutions:
+                            missing.append(req_sub)
+
+                    results['total_devices'] += 1
+
+                    if missing:
+                        instance_issues.append({
+                            'device': yaml_file.stem,
+                            'missing': missing,
+                            'has': list(substitutions.keys())
+                        })
+                    else:
+                        results['compliant_devices'] += 1
+
+                except Exception as e:
+                    instance_issues.append({
+                        'device': yaml_file.stem,
+                        'error': str(e)
+                    })
+
+            if instance_issues:
+                results['issues'].extend([{**issue, 'instance': instance_name} for issue in instance_issues])
+                results['by_instance'][instance_name] = len(instance_issues)
+
+        return jsonify(results)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ============================================================================
 # BULK OPERATIONS API
 # ============================================================================

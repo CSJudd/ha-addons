@@ -943,6 +943,36 @@ class CleanPlatformIOHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"error": str(e)})
 
+class KillStuckProcessesHandler(tornado.web.RequestHandler):
+    """Kill stuck ESPHome compile/upload processes"""
+    def post(self):
+        try:
+            # Kill stuck ESPHome processes
+            result = subprocess.run(
+                ["pkill", "-9", "-f", "esphome.*(compile|run)"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            # Check how many are left
+            check = subprocess.run(
+                ["pgrep", "-fc", "esphome.*(compile|run)"],
+                capture_output=True,
+                text=True
+            )
+
+            remaining = int(check.stdout.strip() or "0")
+
+            self.write({
+                "success": True,
+                "message": f"Killed stuck processes. {remaining} processes remaining.",
+                "remaining": remaining
+            })
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
 class DeviceLogsHandler(tornado.web.RequestHandler):
     """Get device logs (requires device to be online)"""
     def get(self, instance, device_name):
@@ -1526,6 +1556,7 @@ def make_app():
         (r"/api/device/([^/]+)/([^/]+)/logs", DeviceLogsHandler),
         (r"/api/device/([^/]+)/([^/]+)/firmware", DeviceFirmwareHandler),
         (r"/api/instance/([^/]+)/clean-platformio", CleanPlatformIOHandler),
+        (r"/api/system/kill-stuck-processes", KillStuckProcessesHandler),
         (r"/api/config", ConfigHandler),
         (r"/api/check-substitutions", CheckSubstitutionsHandler),
         (r"/api/ha/versions", HAVersionsHandler),

@@ -89,7 +89,7 @@
                  :class="selectedStatFilter === 'all' ? 'ring-4 ring-blue-500' : ''"
                  class="bg-white rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
                 <div class="text-gray-500 text-sm">Total Devices</div>
-                <div class="text-3xl font-bold text-gray-800" x-text="filteredDevices.length"></div>
+                <div class="text-3xl font-bold text-gray-800" x-text="stats.total"></div>
             </div>
             <div @click="selectStatFilter('online')"
                  :class="selectedStatFilter === 'online' ? 'ring-4 ring-green-500' : ''"
@@ -1042,6 +1042,7 @@
                 groupBy: 'none',
                 selectedStatFilter: 'all',
                 stats: {
+                    total: 0,
                     online: 0,
                     offline: 0,
                     updates: 0
@@ -1176,6 +1177,7 @@
                     }
 
                     // Calculate stats from current filtered set (before stat filter)
+                    const statsTotal = filtered.length;
                     const statsOnline = filtered.filter(d => d.status === 'online').length;
                     const statsOffline = filtered.filter(d => d.status === 'offline').length;
                     const statsUpdates = filtered.filter(d => d.update_available).length;
@@ -1193,6 +1195,7 @@
                     this.filteredDevices = filtered;
 
                     // Set stats (these show counts from before stat filter is applied)
+                    this.stats.total = statsTotal;
                     this.stats.online = statsOnline;
                     this.stats.offline = statsOffline;
                     this.stats.updates = statsUpdates;

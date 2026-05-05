@@ -701,6 +701,176 @@ def clean_device(instance, device_name):
         return jsonify({"error": str(e)}), 500
 
 # ============================================================================
+# COMMON FILES MANAGEMENT
+# ============================================================================
+
+@app.route('/api/common/<instance>')
+def list_common_files(instance):
+    """List all common files for an instance"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    config_dir = Path(instance_config["config_dir"])
+    common_dir = config_dir / "common"
+
+    if not common_dir.exists():
+        return jsonify({"files": []})
+
+    files = []
+    for file_path in sorted(common_dir.glob("*.yaml")):
+        files.append({
+            "name": file_path.name,
+            "path": f"common/{file_path.name}",
+            "size": file_path.stat().st_size,
+            "modified": file_path.stat().st_mtime
+        })
+
+    return jsonify({"files": files})
+
+@app.route('/api/common/<instance>/<path:file_path>')
+def get_common_file(instance, file_path):
+    """Get content of a common file"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    config_dir = Path(instance_config["config_dir"])
+    common_file = config_dir / "common" / file_path
+
+    if not common_file.exists() or not str(common_file).startswith(str(config_dir / "common")):
+        return jsonify({"error": "File not found"}), 404
+
+    with common_file.open() as f:
+        content = f.read()
+
+    return jsonify({"content": content, "path": file_path})
+
+@app.route('/api/common/<instance>/<path:file_path>', methods=['POST'])
+def save_common_file(instance, file_path):
+    """Save content to a common file"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    config_dir = Path(instance_config["config_dir"])
+    common_dir = config_dir / "common"
+    common_file = common_dir / file_path
+
+    # Security check
+    if not str(common_file).startswith(str(common_dir)):
+        return jsonify({"error": "Invalid file path"}), 400
+
+    data = request.json
+    new_content = data.get("content", "")
+
+    if not new_content:
+        return jsonify({"error": "No content provided"}), 400
+
+    try:
+        # Create common directory if it doesn't exist
+        common_dir.mkdir(exist_ok=True)
+
+        # Backup if file exists
+        if common_file.exists():
+            backup_file = common_file.with_suffix(".yaml.bak")
+            common_file.rename(backup_file)
+
+        # Write new content
+        with common_file.open('w') as f:
+            f.write(new_content)
+
+        # Try to parse to validate
+        with common_file.open() as f:
+            yaml.safe_load(f)
+
+        # Success - remove backup
+        backup_file = common_file.with_suffix(".yaml.bak")
+        if backup_file.exists():
+            backup_file.unlink()
+
+        return jsonify({"success": True, "message": "File saved"})
+
+    except Exception as e:
+        # Restore backup on error
+        backup_file = common_file.with_suffix(".yaml.bak")
+        if backup_file.exists():
+            backup_file.rename(common_file)
+        return jsonify({"error": f"Failed to save: {str(e)}"}), 500
+
+@app.route('/api/common/<instance>/<path:file_path>', methods=['DELETE'])
+def delete_common_file(instance, file_path):
+    """Delete a common file"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    config_dir = Path(instance_config["config_dir"])
+    common_file = config_dir / "common" / file_path
+
+    # Security check
+    if not str(common_file).startswith(str(config_dir / "common")):
+        return jsonify({"error": "Invalid file path"}), 400
+
+    if not common_file.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    try:
+        common_file.unlink()
+        return jsonify({"success": True, "message": "File deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# HOME ASSISTANT INTEGRATION
+# ============================================================================
+
+@app.route('/api/ha/versions', methods=['POST'])
+def get_ha_versions():
+    """Query Home Assistant for ESPHome device versions"""
+    data = request.json
+    ha_url = data.get("ha_url", "http://homeassistant.local:8123")
+    ha_token = data.get("ha_token", "")
+
+    if not ha_token:
+        return jsonify({"error": "Home Assistant token required"}), 400
+
+    try:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {ha_token}",
+            "Content-Type": "application/json"
+        }
+
+        # Query ESPHome devices from HA
+        response = requests.get(
+            f"{ha_url}/api/states",
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            return jsonify({"error": f"HA API error: {response.status_code}"}), 500
+
+        states = response.json()
+
+        # Extract ESPHome device versions
+        versions = {}
+        for state in states:
+            entity_id = state.get("entity_id", "")
+            # Look for ESPHome version sensors
+            if entity_id.endswith("_esphome_version"):
+                device_name = entity_id.replace("sensor.", "").replace("_esphome_version", "")
+                version = state.get("state")
+                if version and version != "unknown":
+                    versions[device_name] = version
+
+        return jsonify({"versions": versions, "count": len(versions)})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
 # ENTRY POINT
 # ============================================================================
 

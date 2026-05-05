@@ -879,15 +879,15 @@
                                 class="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center justify-center">
                             <span class="mr-2">✓</span> Validate
                         </button>
-                        <button @click="deviceAction('compile')"
+                        <button @click="openNativeDashboard()"
                                 class="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center justify-center">
                             <span class="mr-2">⚙️</span> Compile Only
                         </button>
-                        <button @click="deviceAction('upload')"
+                        <button @click="openNativeDashboard()"
                                 class="px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center justify-center">
                             <span class="mr-2">📡</span> OTA (Compile/Flash)
                         </button>
-                        <button @click="downloadFirmware()"
+                        <button @click="openNativeDashboard()"
                                 class="px-4 py-3 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition flex items-center justify-center">
                             <span class="mr-2">💾</span> Download (Compile/Save)
                         </button>
@@ -1747,6 +1747,27 @@
                         console.error('Error cleaning PlatformIO:', error);
                         alert('❌ Error: ' + error.message);
                     }
+                },
+
+                openNativeDashboard() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    // Get dashboard URL for this instance
+                    const dashboardUrls = {
+                        'production': 'https://codex:6052',
+                        'lab': 'https://codex:6054'
+                    };
+
+                    const baseUrl = dashboardUrls[device.instance];
+                    if (!baseUrl) {
+                        alert('No dashboard URL configured for this instance');
+                        return;
+                    }
+
+                    // Open native ESPHome dashboard for this device
+                    const deviceUrl = `${baseUrl}/?dashboard_wizard=${device.config_file}`;
+                    window.open(deviceUrl, '_blank', 'width=1200,height=800');
                 },
 
                 // ============================================================================

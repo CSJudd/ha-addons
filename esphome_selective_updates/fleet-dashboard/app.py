@@ -166,24 +166,40 @@ def discover_devices(instance: Dict) -> List[Dict]:
             name = esphome_config.get("name") or yaml_file.stem
 
             # Extract device type from name pattern
-            device_type = "unknown"
-            if name.startswith("sp"):
-                device_type = "Sonoff S31"
-            elif name.startswith("mjs") or name.startswith("mjd"):
-                device_type = "Martin Jerry"
-            elif name.startswith("as"):
-                device_type = "Athom Switch"
-            elif name.startswith("kauf"):
-                device_type = "Kauf RGB"
-            elif name.startswith("ap"):
-                device_type = "Athom Plug"
-            elif name.startswith("valve"):
-                device_type = "Valve"
-            elif name.startswith("ai"):
-                device_type = "Athom Inching"
+            # Handle vd- prefix (e.g., vd-ai001-lounge-patio)
+            clean_name = name.replace("vd-", "").replace("_", "-")
+            parts = clean_name.split("-")
+            device_code = parts[0] if parts else name
 
-            # Extract room from comment or metadata
+            device_type = "unknown"
+            if device_code.startswith("sp"):
+                device_type = "Sonoff S31"
+            elif device_code.startswith("mjs") or device_code.startswith("mjd"):
+                device_type = "Martin Jerry"
+            elif device_code.startswith("as"):
+                device_type = "Athom Switch"
+            elif device_code.startswith("kauf"):
+                device_type = "Kauf RGB"
+            elif device_code.startswith("ap"):
+                device_type = "Athom Plug"
+            elif device_code.startswith("valve"):
+                device_type = "Valve"
+            elif device_code.startswith("ai"):
+                device_type = "Athom Inching"
+            elif device_code.startswith("aqp"):
+                device_type = "Aquarium Pump"
+            elif device_code.startswith("ratgdo"):
+                device_type = "RATGDO"
+            elif device_code.startswith("tsd"):
+                device_type = "Touchscreen"
+            elif device_code.startswith("wxd"):
+                device_type = "Weather Display"
+
+            # Extract room from device name (e.g., vd-ai001-lounge-patio -> "Lounge Patio")
             room = "Unknown"
+            if len(parts) > 1:
+                room_parts = parts[1:]  # Everything after device code
+                room = " ".join(word.capitalize() for word in room_parts if word)
             wifi_config = config.get("wifi", {})
             ip = None
             if "manual_ip" in wifi_config:

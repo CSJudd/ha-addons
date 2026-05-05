@@ -25,9 +25,21 @@
             <div class="flex items-center justify-between">
                 <div>
                     <h1 class="text-2xl font-bold">🚀 ESPHome Fleet Manager</h1>
-                    <p class="text-blue-100 text-sm">Codex Production & Lab</p>
+                    <p class="text-blue-100 text-sm">Multi-Instance Fleet Management</p>
                 </div>
                 <div class="flex items-center space-x-4">
+                    <!-- Instance Selector -->
+                    <div class="bg-blue-500 px-4 py-2 rounded-lg">
+                        <label class="text-xs text-blue-100 block mb-1">Instance:</label>
+                        <select x-model="currentInstance"
+                                @change="switchInstance()"
+                                class="bg-white text-gray-800 px-3 py-1 rounded border-0 font-medium">
+                            <option value="">All Instances</option>
+                            <template x-for="inst in instances" :key="inst.slug">
+                                <option :value="inst.slug" x-text="inst.name"></option>
+                            </template>
+                        </select>
+                    </div>
                     <button @click="refreshDevices()"
                             class="px-4 py-2 bg-blue-500 hover:bg-blue-400 rounded-lg transition">
                         🔄 Refresh
@@ -246,6 +258,8 @@
                 devices: [],
                 filteredDevices: [],
                 deviceTypes: [],
+                instances: [],
+                currentInstance: '',
                 selectedDevices: [],
                 expandedGroups: [],
                 loading: true,
@@ -263,8 +277,23 @@
                 },
 
                 async init() {
+                    await this.loadInstances();
                     await this.loadDevices();
                     await this.loadDeviceTypes();
+                },
+
+                async loadInstances() {
+                    try {
+                        const response = await fetch('/api/instances');
+                        this.instances = await response.json();
+                    } catch (error) {
+                        console.error('Error loading instances:', error);
+                    }
+                },
+
+                async switchInstance() {
+                    this.filters.instance = this.currentInstance;
+                    await this.loadDevices();
                 },
 
                 async loadDevices() {

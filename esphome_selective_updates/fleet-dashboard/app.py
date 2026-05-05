@@ -582,13 +582,37 @@ def compile_device(instance, device_name):
         return jsonify({"error": "Instance not found"}), 404
 
     try:
-        result = subprocess.run(
-            ["docker", "exec", instance_config["container"],
-             "esphome", "compile", f"/config/{device_name}.yaml"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+        # Check if device has pinned ESPHome version
+        config_dir = Path(instance_config["config_dir"])
+        yaml_file = config_dir / f"{device_name}.yaml"
+
+        pinned_version = None
+        if yaml_file.exists():
+            with yaml_file.open() as f:
+                config = yaml.safe_load(f)
+                substitutions = config.get("substitutions", {})
+                pinned_version = substitutions.get("esphome_version", "*")
+
+        # Use version-specific Docker image if pinned
+        if pinned_version and pinned_version != "*":
+            result = subprocess.run(
+                ["docker", "run", "--rm",
+                 "-v", f"{config_dir}:/config",
+                 f"esphome/esphome:{pinned_version}",
+                 "compile", f"/config/{device_name}.yaml"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+        else:
+            # Use existing container (latest version)
+            result = subprocess.run(
+                ["docker", "exec", instance_config["container"],
+                 "esphome", "compile", f"/config/{device_name}.yaml"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
 
         return jsonify({
             "success": result.returncode == 0,
@@ -605,13 +629,37 @@ def upload_device(instance, device_name):
         return jsonify({"error": "Instance not found"}), 404
 
     try:
-        result = subprocess.run(
-            ["docker", "exec", instance_config["container"],
-             "esphome", "upload", f"/config/{device_name}.yaml", "--device", "OTA"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+        # Check if device has pinned ESPHome version
+        config_dir = Path(instance_config["config_dir"])
+        yaml_file = config_dir / f"{device_name}.yaml"
+
+        pinned_version = None
+        if yaml_file.exists():
+            with yaml_file.open() as f:
+                config = yaml.safe_load(f)
+                substitutions = config.get("substitutions", {})
+                pinned_version = substitutions.get("esphome_version", "*")
+
+        # Use version-specific Docker image if pinned
+        if pinned_version and pinned_version != "*":
+            result = subprocess.run(
+                ["docker", "run", "--rm", "--network", "host",
+                 "-v", f"{config_dir}:/config",
+                 f"esphome/esphome:{pinned_version}",
+                 "upload", f"/config/{device_name}.yaml", "--device", "OTA"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+        else:
+            # Use existing container (latest version)
+            result = subprocess.run(
+                ["docker", "exec", instance_config["container"],
+                 "esphome", "upload", f"/config/{device_name}.yaml", "--device", "OTA"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
 
         return jsonify({
             "success": result.returncode == 0,

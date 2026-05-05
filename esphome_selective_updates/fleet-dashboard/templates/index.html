@@ -259,13 +259,13 @@
                 filteredDevices: [],
                 deviceTypes: [],
                 instances: [],
-                currentInstance: '',
+                currentInstance: 'production',
                 selectedDevices: [],
                 expandedGroups: [],
                 loading: true,
                 search: '',
                 filters: {
-                    instance: '',
+                    instance: 'production',
                     type: '',
                     status: ''
                 },
@@ -299,7 +299,14 @@
                 async loadDevices() {
                     this.loading = true;
                     try {
-                        const response = await fetch('/api/devices');
+                        // Build query params
+                        const params = new URLSearchParams();
+                        if (this.currentInstance) {
+                            params.append('instance', this.currentInstance);
+                        }
+
+                        const url = '/api/devices' + (params.toString() ? '?' + params.toString() : '');
+                        const response = await fetch(url);
                         const data = await response.json();
                         this.devices = data.devices;
                         this.filterDevices();

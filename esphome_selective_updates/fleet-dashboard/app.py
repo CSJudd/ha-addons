@@ -27,6 +27,7 @@ from typing import List, Dict, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add custom YAML constructor to handle ESPHome's !include directive
 def include_constructor(loader, node):
@@ -174,6 +175,20 @@ def init_db():
 # DEVICE DISCOVERY
 # ============================================================================
 
+def check_device_online(ip: str) -> str:
+    """Check if device is online via ping (1s timeout)"""
+    if not ip:
+        return "unknown"
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", "1", ip],
+            capture_output=True,
+            timeout=2
+        )
+        return "online" if result.returncode == 0 else "offline"
+    except:
+        return "offline"
+
 def discover_devices(instance: Dict) -> List[Dict]:
     """Discover all ESPHome devices for an instance"""
     config_dir = Path(instance["config_dir"])
@@ -182,6 +197,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
     if not config_dir.exists():
         return devices
 
+    # First pass: collect all device info without pinging
     for yaml_file in sorted(config_dir.glob("*.yaml")):
         try:
             with yaml_file.open() as f:
@@ -226,6 +242,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
             if len(parts) > 1:
                 room_parts = parts[1:]  # Everything after device code
                 room = " ".join(word.capitalize() for word in room_parts if word)
+
             wifi_config = config.get("wifi", {})
             ip = None
             if "manual_ip" in wifi_config:
@@ -234,7 +251,6 @@ def discover_devices(instance: Dict) -> List[Dict]:
             # Try to read device info from .esphome storage
             storage_json = config_dir / ".esphome" / "storage" / f"{yaml_file.name}.json"
             deployed_version = None
-            status = "unknown"
 
             if storage_json.exists():
                 try:
@@ -247,18 +263,6 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 except Exception as e:
                     print(f"Error reading storage for {name}: {e}")
 
-            # Simple ping check for status (with 1s timeout)
-            if ip:
-                try:
-                    result = subprocess.run(
-                        ["ping", "-c", "1", "-W", "1", ip],
-                        capture_output=True,
-                        timeout=2
-                    )
-                    status = "online" if result.returncode == 0 else "offline"
-                except:
-                    status = "offline"
-
             devices.append({
                 "instance": instance["slug"],
                 "name": name,
@@ -267,7 +271,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 "room": room,
                 "ip_address": ip,
                 "config_file": yaml_file.name,
-                "status": status,
+                "status": "unknown",  # Will be updated in parallel
                 "deployed_version": deployed_version,
                 "current_version": None,
                 "update_available": False
@@ -276,6 +280,27 @@ def discover_devices(instance: Dict) -> List[Dict]:
         except Exception as e:
             print(f"Error parsing {yaml_file}: {e}")
             continue
+
+    # Second pass: ping all devices in parallel (max 100 workers)
+    print(f"Checking status for {len(devices)} devices in {instance['name']}...")
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        # Submit all ping checks
+        future_to_device = {
+            executor.submit(check_device_online, device["ip_address"]): device
+            for device in devices
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_device):
+            device = future_to_device[future]
+            try:
+                device["status"] = future.result()
+            except Exception as e:
+                print(f"Error checking {device['name']}: {e}")
+                device["status"] = "unknown"
+
+    online_count = sum(1 for d in devices if d["status"] == "online")
+    print(f"  {online_count}/{len(devices)} devices online")
 
     return devices
 

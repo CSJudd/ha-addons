@@ -877,6 +877,29 @@ def clean_device(instance, device_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/instance/<instance>/clean-platformio', methods=['POST'])
+def clean_platformio_cache(instance):
+    """Clean PlatformIO cache to fix toolchain corruption"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", instance_config["container"],
+             "rm", "-rf", "/root/.platformio"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        return jsonify({
+            "success": result.returncode == 0,
+            "message": "PlatformIO cache cleaned. Next compile will reinstall toolchain."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/device/<instance>/<device_name>/firmware')
 def download_firmware(instance, device_name):
     """Download compiled firmware binary for UART flashing"""

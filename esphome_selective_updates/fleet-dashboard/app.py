@@ -33,7 +33,7 @@ app = Flask(__name__)
 # CONFIGURATION
 # ============================================================================
 
-CONFIG_FILE = Path(os.environ.get("FLEET_CONFIG", "/opt/esphome-updater/fleet-dashboard/config.yaml"))
+CONFIG_FILE = Path(os.environ.get("FLEET_CONFIG", "/opt/esphome-updater/esphome_selective_updates/fleet-dashboard/config.yaml"))
 
 def load_config():
     """Load fleet dashboard configuration"""

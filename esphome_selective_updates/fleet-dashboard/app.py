@@ -677,23 +677,31 @@ def compile_device_stream(instance, device_name):
                     substitutions = config.get("substitutions", {})
                     pinned_version = substitutions.get("esphome_version", "*")
 
-            # Build command
+            # Build command with unbuffered output
             if pinned_version and pinned_version != "*":
                 cmd = ["docker", "run", "--rm",
+                       "-e", "PYTHONUNBUFFERED=1",
                        "-v", f"{config_dir}:/config",
                        f"esphome/esphome:{pinned_version}",
                        "compile", f"/config/{device_name}.yaml"]
             else:
-                cmd = ["docker", "exec", instance_config["container"],
+                cmd = ["docker", "exec",
+                       "-e", "PYTHONUNBUFFERED=1",
+                       instance_config["container"],
                        "esphome", "compile", f"/config/{device_name}.yaml"]
 
             # Start process with real-time output
+            import os
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'
+
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env=env
             )
 
             # Stream output line by line
@@ -781,23 +789,31 @@ def upload_device_stream(instance, device_name):
                     substitutions = config.get("substitutions", {})
                     pinned_version = substitutions.get("esphome_version", "*")
 
-            # Build command
+            # Build command with unbuffered output
             if pinned_version and pinned_version != "*":
                 cmd = ["docker", "run", "--rm", "--network", "host",
+                       "-e", "PYTHONUNBUFFERED=1",
                        "-v", f"{config_dir}:/config",
                        f"esphome/esphome:{pinned_version}",
                        "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
             else:
-                cmd = ["docker", "exec", instance_config["container"],
+                cmd = ["docker", "exec",
+                       "-e", "PYTHONUNBUFFERED=1",
+                       instance_config["container"],
                        "esphome", "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
 
             # Start process with real-time output
+            import os
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'
+
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env=env
             )
 
             # Stream output line by line

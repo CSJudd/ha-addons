@@ -34,9 +34,10 @@
                         <select x-model="currentInstance"
                                 @change="switchInstance()"
                                 class="bg-white text-gray-800 px-3 py-1 rounded border-0 font-medium">
-                            <option value="">All Instances</option>
                             <template x-for="inst in instances" :key="inst.slug">
-                                <option :value="inst.slug" x-text="inst.name"></option>
+                                <option :value="inst.slug"
+                                        x-text="inst.name"
+                                        :selected="inst.slug === currentInstance"></option>
                             </template>
                         </select>
                     </div>
@@ -163,6 +164,7 @@
                                     </th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Area</th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Version</th>
@@ -185,6 +187,7 @@
                                             <div class="text-xs text-gray-500" x-text="device.name + ' • ' + (device.ip_address || 'mDNS')"></div>
                                         </td>
                                         <td class="px-4 py-3 text-sm text-gray-700" x-text="device.device_type"></td>
+                                        <td class="px-4 py-3 text-sm text-gray-700" x-text="device.area || 'Unknown'"></td>
                                         <td class="px-4 py-3">
                                             <span class="px-2 py-1 text-xs rounded-full"
                                                   :class="device.instance === 'production' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
@@ -231,25 +234,69 @@
                                     </h3>
                                     <span x-text="expandedGroups.includes(key) ? '▼' : '▶'" class="text-gray-400"></span>
                                 </div>
-                                <div x-show="expandedGroups.includes(key)" class="ml-4">
-                                    <template x-for="device in group" :key="device.name">
-                                        <div class="py-2 px-4 hover:bg-gray-50 rounded flex items-center justify-between">
-                                            <div class="flex items-center space-x-4">
-                                                <input type="checkbox"
-                                                       :value="device.name"
-                                                       x-model="selectedDevices"
-                                                       class="rounded">
-                                                <div>
-                                                    <div class="font-medium" x-text="device.name"></div>
-                                                    <div class="text-xs text-gray-500" x-text="device.device_type"></div>
-                                                </div>
-                                            </div>
-                                            <button @click="updateDevice(device)"
-                                                    class="text-blue-600 hover:text-blue-800 text-sm">
-                                                Update
-                                            </button>
-                                        </div>
-                                    </template>
+                                <div x-show="expandedGroups.includes(key)" class="overflow-x-auto">
+                                    <table class="w-full">
+                                        <thead class="bg-gray-50 border-b">
+                                            <tr>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                                                    <input type="checkbox" class="rounded">
+                                                </th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Area</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Version</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-gray-200">
+                                            <template x-for="device in group" :key="device.name">
+                                                <tr class="hover:bg-gray-50 transition">
+                                                    <td class="px-4 py-2">
+                                                        <input type="checkbox"
+                                                               :value="device.name"
+                                                               x-model="selectedDevices"
+                                                               class="rounded">
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <div class="font-medium text-blue-600 hover:text-blue-800 cursor-pointer text-sm"
+                                                             @click="openDeviceModal(device)"
+                                                             x-text="device.friendly_name || device.name"></div>
+                                                        <div class="text-xs text-gray-500" x-text="device.name"></div>
+                                                    </td>
+                                                    <td class="px-4 py-2 text-sm text-gray-700" x-text="device.device_type"></td>
+                                                    <td class="px-4 py-2 text-sm text-gray-700" x-text="device.area || 'Unknown'"></td>
+                                                    <td class="px-4 py-2">
+                                                        <span class="px-2 py-1 text-xs rounded-full"
+                                                              :class="device.instance === 'production' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
+                                                              x-text="device.instance"></span>
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <span class="px-2 py-1 text-xs rounded-full"
+                                                              :class="{
+                                                                  'bg-green-100 text-green-700': device.status === 'online',
+                                                                  'bg-red-100 text-red-700': device.status === 'offline',
+                                                                  'bg-gray-100 text-gray-700': device.status === 'unknown'
+                                                              }"
+                                                              x-text="device.status"></span>
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <div class="text-sm text-gray-900" x-text="device.current_version || device.deployed_version || 'unknown'"></div>
+                                                        <div x-show="device.update_available" class="text-xs text-orange-600">
+                                                            ⚠ Update to <span x-text="device.deployed_version"></span>
+                                                        </div>
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <button @click="openDeviceModal(device)"
+                                                                class="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                                                            Manage
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
                         </template>
@@ -347,15 +394,40 @@
                                 class="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition flex items-center justify-center">
                             <span class="mr-2">📄</span> View Config
                         </button>
+                        <button @click="toggleEditMode()"
+                                x-show="deviceModal.output && !deviceModal.editMode"
+                                class="px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center justify-center">
+                            <span class="mr-2">✏️</span> Edit Config
+                        </button>
                     </div>
                 </div>
 
-                <!-- Action Output -->
+                <!-- Action Output / Edit Mode -->
                 <div x-show="deviceModal.output"
                      class="px-6 py-4 border-t">
-                    <div class="mb-2 font-semibold text-gray-700">Output:</div>
-                    <pre class="bg-gray-900 text-green-400 p-4 rounded text-xs overflow-x-auto max-h-96"
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="font-semibold text-gray-700">
+                            <span x-show="!deviceModal.editMode">Output:</span>
+                            <span x-show="deviceModal.editMode" class="text-orange-600">Editing Configuration:</span>
+                        </div>
+                        <div x-show="deviceModal.editMode" class="flex space-x-2">
+                            <button @click="saveConfig()"
+                                    class="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">
+                                💾 Save
+                            </button>
+                            <button @click="cancelEdit()"
+                                    class="px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-700">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                    <pre x-show="!deviceModal.editMode"
+                         class="bg-gray-900 text-green-400 p-4 rounded text-xs overflow-x-auto max-h-96"
                          x-text="deviceModal.output"></pre>
+                    <textarea x-show="deviceModal.editMode"
+                              x-model="deviceModal.output"
+                              class="w-full h-96 p-4 bg-gray-900 text-green-400 rounded text-xs font-mono"
+                              spellcheck="false"></textarea>
                 </div>
 
                 <!-- Loading -->
@@ -396,7 +468,9 @@
                     show: false,
                     device: null,
                     loading: false,
-                    output: ''
+                    output: '',
+                    editMode: false,
+                    originalOutput: ''
                 },
 
                 async init() {
@@ -572,6 +646,45 @@
                         }
                     } catch (error) {
                         this.deviceModal.output = `Error: ${error.message}`;
+                    } finally {
+                        this.deviceModal.loading = false;
+                    }
+                },
+
+                toggleEditMode() {
+                    this.deviceModal.editMode = true;
+                    this.deviceModal.originalOutput = this.deviceModal.output;
+                },
+
+                cancelEdit() {
+                    this.deviceModal.editMode = false;
+                    this.deviceModal.output = this.deviceModal.originalOutput;
+                },
+
+                async saveConfig() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    this.deviceModal.loading = true;
+
+                    try {
+                        const response = await fetch(`/api/device/${device.instance}/${device.name}/config`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({config: this.deviceModal.output})
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            this.deviceModal.editMode = false;
+                            this.deviceModal.originalOutput = this.deviceModal.output;
+                            alert('Configuration saved successfully!');
+                        } else {
+                            alert(`Error: ${data.error}`);
+                        }
+                    } catch (error) {
+                        alert(`Error saving configuration: ${error.message}`);
                     } finally {
                         this.deviceModal.loading = false;
                     }

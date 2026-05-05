@@ -240,6 +240,10 @@ def discover_devices(instance: Dict) -> List[Dict]:
             esphome_config = config.get("esphome", {})
             name = esphome_config.get("name") or yaml_file.stem
 
+            # Extract substitutions for area
+            substitutions = config.get("substitutions", {})
+            area = substitutions.get("area", "Unknown")
+
             # Extract device type from name pattern
             # Handle vd- prefix (e.g., vd-ai001-lounge-patio)
             clean_name = name.replace("vd-", "").replace("_", "-")
@@ -271,10 +275,13 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 device_type = "Weather Display"
 
             # Extract room from device name (e.g., vd-ai001-lounge-patio -> "Lounge Patio")
-            room = "Unknown"
+            # Fallback to area from substitutions if room can't be parsed
+            room = area
             if len(parts) > 1:
                 room_parts = parts[1:]  # Everything after device code
-                room = " ".join(word.capitalize() for word in room_parts if word)
+                parsed_room = " ".join(word.capitalize() for word in room_parts if word)
+                if parsed_room:
+                    room = parsed_room
 
             wifi_config = config.get("wifi", {})
             ip = None
@@ -305,7 +312,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 "node_name": name,
                 "device_type": device_type,
                 "room": room,
-                "area": room,  # Use room as area for now
+                "area": area,  # From substitutions
                 "ip_address": ip,
                 "config_file": yaml_file.name,
                 "status": "unknown",  # Will be updated in parallel
@@ -535,6 +542,49 @@ def get_device_config(instance, device_name):
         content = f.read()
 
     return jsonify({"config": content})
+
+@app.route('/api/device/<instance>/<device_name>/config', methods=['POST'])
+def save_device_config(instance, device_name):
+    """Save device YAML configuration"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    config_dir = Path(instance_config["config_dir"])
+    yaml_file = config_dir / f"{device_name}.yaml"
+
+    if not yaml_file.exists():
+        return jsonify({"error": "Device not found"}), 404
+
+    data = request.json
+    new_content = data.get("config", "")
+
+    if not new_content:
+        return jsonify({"error": "No content provided"}), 400
+
+    try:
+        # Backup original file
+        backup_file = yaml_file.with_suffix(".yaml.bak")
+        yaml_file.rename(backup_file)
+
+        # Write new content
+        with yaml_file.open('w') as f:
+            f.write(new_content)
+
+        # Try to parse to validate
+        with yaml_file.open() as f:
+            yaml.safe_load(f)
+
+        # Success - remove backup
+        backup_file.unlink()
+
+        return jsonify({"success": True, "message": "Configuration saved"})
+
+    except Exception as e:
+        # Restore backup on error
+        if backup_file.exists():
+            backup_file.rename(yaml_file)
+        return jsonify({"error": f"Failed to save: {str(e)}"}), 500
 
 @app.route('/api/device/<instance>/<device_name>/validate', methods=['POST'])
 def validate_device(instance, device_name):

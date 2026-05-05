@@ -5,14 +5,14 @@ instances:
     slug: "production"
     config_dir: "/opt/data-services/esphome/production"
     container: "codex-esphome-production"
-    dashboard_url: "https://codex:6052"
+    dashboard_url: "https://codex.grid.foxrunn.net:6052"
     enabled: true
 
   - name: "Lab"
     slug: "lab"
     config_dir: "/opt/data-services/esphome/lab"
     container: "codex-esphome-lab"
-    dashboard_url: "https://codex:6054"
+    dashboard_url: "https://codex.grid.foxrunn.net:6054"
     enabled: true
 
 updater:

@@ -116,6 +116,7 @@
                             class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
                         <option value="none">No Grouping</option>
                         <option value="type">Group by Type</option>
+                        <option value="area">Group by Area</option>
                         <option value="instance">Group by Instance</option>
                         <option value="status">Group by Status</option>
                     </select>
@@ -178,8 +179,10 @@
                                                    class="rounded">
                                         </td>
                                         <td class="px-4 py-3">
-                                            <div class="font-medium text-gray-900" x-text="device.name"></div>
-                                            <div class="text-xs text-gray-500" x-text="device.ip_address || 'mDNS'"></div>
+                                            <div class="font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
+                                                 @click="openDeviceModal(device)"
+                                                 x-text="device.friendly_name || device.name"></div>
+                                            <div class="text-xs text-gray-500" x-text="device.name + ' • ' + (device.ip_address || 'mDNS')"></div>
                                         </td>
                                         <td class="px-4 py-3 text-sm text-gray-700" x-text="device.device_type"></td>
                                         <td class="px-4 py-3">
@@ -188,14 +191,19 @@
                                                   x-text="device.instance"></span>
                                         </td>
                                         <td class="px-4 py-3">
-                                            <span class="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700"
+                                            <span class="px-2 py-1 text-xs rounded-full"
+                                                  :class="{
+                                                      'bg-green-100 text-green-700': device.status === 'online',
+                                                      'bg-red-100 text-red-700': device.status === 'offline',
+                                                      'bg-gray-100 text-gray-700': device.status === 'unknown'
+                                                  }"
                                                   x-text="device.status"></span>
                                         </td>
                                         <td class="px-4 py-3 text-sm text-gray-700" x-text="device.deployed_version || 'unknown'"></td>
                                         <td class="px-4 py-3">
-                                            <button @click="updateDevice(device)"
-                                                    class="text-blue-600 hover:text-blue-800 text-sm">
-                                                Update
+                                            <button @click="openDeviceModal(device)"
+                                                    class="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                                                Manage
                                             </button>
                                         </td>
                                     </tr>
@@ -251,6 +259,107 @@
         </div>
     </div>
 
+    <!-- Device Detail Modal -->
+    <div x-show="deviceModal.show"
+         x-cloak
+         class="fixed inset-0 z-50 overflow-y-auto"
+         @keydown.escape.window="closeDeviceModal()">
+        <!-- Backdrop -->
+        <div class="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
+             @click="closeDeviceModal()"></div>
+
+        <!-- Modal Content -->
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="relative bg-white rounded-lg shadow-xl max-w-4xl w-full"
+                 @click.stop>
+                <!-- Header -->
+                <div class="flex items-center justify-between px-6 py-4 border-b">
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-900" x-text="deviceModal.device?.friendly_name || deviceModal.device?.name"></h2>
+                        <p class="text-sm text-gray-500" x-text="deviceModal.device?.name + ' • ' + (deviceModal.device?.ip_address || 'mDNS')"></p>
+                    </div>
+                    <button @click="closeDeviceModal()"
+                            class="text-gray-400 hover:text-gray-600">
+                        <span class="text-2xl">&times;</span>
+                    </button>
+                </div>
+
+                <!-- Device Info -->
+                <div class="px-6 py-4 border-b bg-gray-50">
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div>
+                            <div class="text-xs text-gray-500">Status</div>
+                            <span class="px-2 py-1 text-xs rounded-full inline-block"
+                                  :class="{
+                                      'bg-green-100 text-green-700': deviceModal.device?.status === 'online',
+                                      'bg-red-100 text-red-700': deviceModal.device?.status === 'offline',
+                                      'bg-gray-100 text-gray-700': deviceModal.device?.status === 'unknown'
+                                  }"
+                                  x-text="deviceModal.device?.status"></span>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500">Version</div>
+                            <div class="font-medium" x-text="deviceModal.device?.deployed_version || 'unknown'"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500">Type</div>
+                            <div class="font-medium" x-text="deviceModal.device?.device_type"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500">Area</div>
+                            <div class="font-medium" x-text="deviceModal.device?.area || 'Unknown'"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="px-6 py-4">
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <button @click="deviceAction('validate')"
+                                class="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center justify-center">
+                            <span class="mr-2">✓</span> Validate
+                        </button>
+                        <button @click="deviceAction('compile')"
+                                class="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center justify-center">
+                            <span class="mr-2">⚙</span> Compile
+                        </button>
+                        <button @click="deviceAction('upload')"
+                                class="px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center justify-center">
+                            <span class="mr-2">↑</span> Upload (OTA)
+                        </button>
+                        <button @click="deviceAction('logs')"
+                                class="px-4 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center justify-center">
+                            <span class="mr-2">📋</span> View Logs
+                        </button>
+                        <button @click="deviceAction('clean')"
+                                class="px-4 py-3 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition flex items-center justify-center">
+                            <span class="mr-2">🗑</span> Clean Build
+                        </button>
+                        <button @click="deviceAction('config')"
+                                class="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition flex items-center justify-center">
+                            <span class="mr-2">📄</span> View Config
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Action Output -->
+                <div x-show="deviceModal.output"
+                     class="px-6 py-4 border-t">
+                    <div class="mb-2 font-semibold text-gray-700">Output:</div>
+                    <pre class="bg-gray-900 text-green-400 p-4 rounded text-xs overflow-x-auto max-h-96"
+                         x-text="deviceModal.output"></pre>
+                </div>
+
+                <!-- Loading -->
+                <div x-show="deviceModal.loading"
+                     class="px-6 py-4 border-t text-center">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                    <div class="mt-2 text-gray-600">Processing...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Alpine.js Data -->
     <script>
         function fleetManager() {
@@ -274,6 +383,12 @@
                     online: 0,
                     offline: 0,
                     updates: 0
+                },
+                deviceModal: {
+                    show: false,
+                    device: null,
+                    loading: false,
+                    output: ''
                 },
 
                 async init() {
@@ -409,6 +524,48 @@
                     // Expand all groups by default in grouped view
                     if (this.groupBy !== 'none') {
                         this.expandedGroups = Object.keys(this.groupedDevices);
+                    }
+                },
+
+                openDeviceModal(device) {
+                    this.deviceModal.device = device;
+                    this.deviceModal.show = true;
+                    this.deviceModal.output = '';
+                    this.deviceModal.loading = false;
+                },
+
+                closeDeviceModal() {
+                    this.deviceModal.show = false;
+                    this.deviceModal.device = null;
+                    this.deviceModal.output = '';
+                    this.deviceModal.loading = false;
+                },
+
+                async deviceAction(action) {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    this.deviceModal.loading = true;
+                    this.deviceModal.output = '';
+
+                    try {
+                        let url = `/api/device/${device.instance}/${device.name}/${action}`;
+                        let method = ['validate', 'compile', 'upload', 'clean'].includes(action) ? 'POST' : 'GET';
+
+                        const response = await fetch(url, { method });
+                        const data = await response.json();
+
+                        if (action === 'config') {
+                            this.deviceModal.output = data.config || 'No configuration found';
+                        } else if (action === 'logs') {
+                            this.deviceModal.output = data.logs || 'No logs available';
+                        } else {
+                            this.deviceModal.output = data.output || data.error || 'Action completed';
+                        }
+                    } catch (error) {
+                        this.deviceModal.output = `Error: ${error.message}`;
+                    } finally {
+                        this.deviceModal.loading = false;
                     }
                 }
             }

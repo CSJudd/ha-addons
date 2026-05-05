@@ -256,12 +256,14 @@ def discover_devices(instance: Dict) -> List[Dict]:
             # Try to read device info from .esphome storage
             storage_json = config_dir / ".esphome" / "storage" / f"{yaml_file.name}.json"
             deployed_version = None
+            friendly_name = None
 
             if storage_json.exists():
                 try:
                     with storage_json.open() as f:
                         storage_data = json.load(f)
                         deployed_version = storage_data.get("esphome_version")
+                        friendly_name = storage_data.get("friendly_name")
                         # Use IP from storage if not in YAML
                         if not ip:
                             ip = storage_data.get("address")
@@ -271,9 +273,11 @@ def discover_devices(instance: Dict) -> List[Dict]:
             devices.append({
                 "instance": instance["slug"],
                 "name": name,
+                "friendly_name": friendly_name or name,
                 "node_name": name,
                 "device_type": device_type,
                 "room": room,
+                "area": room,  # Use room as area for now
                 "ip_address": ip,
                 "config_file": yaml_file.name,
                 "status": "unknown",  # Will be updated in parallel
@@ -426,6 +430,172 @@ def get_history():
     """Get update history"""
     # TODO: Query database for history
     return jsonify([])
+
+# ============================================================================
+# DEVICE ACTIONS
+# ============================================================================
+
+def get_instance_config(instance_slug: str) -> Optional[Dict]:
+    """Get instance configuration by slug"""
+    for instance in CONFIG["instances"]:
+        if instance["slug"] == instance_slug:
+            return instance
+    return None
+
+@app.route('/api/device/<instance>/<device_name>')
+def get_device_detail(instance, device_name):
+    """Get detailed device information"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    config_dir = Path(instance_config["config_dir"])
+    yaml_file = config_dir / f"{device_name}.yaml"
+
+    if not yaml_file.exists():
+        return jsonify({"error": "Device not found"}), 404
+
+    # Read storage JSON for full details
+    storage_json = config_dir / ".esphome" / "storage" / f"{device_name}.yaml.json"
+    device_info = {"name": device_name, "instance": instance}
+
+    if storage_json.exists():
+        with storage_json.open() as f:
+            device_info.update(json.load(f))
+
+    return jsonify(device_info)
+
+@app.route('/api/device/<instance>/<device_name>/config')
+def get_device_config(instance, device_name):
+    """Get device YAML configuration"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    config_dir = Path(instance_config["config_dir"])
+    yaml_file = config_dir / f"{device_name}.yaml"
+
+    if not yaml_file.exists():
+        return jsonify({"error": "Device not found"}), 404
+
+    with yaml_file.open() as f:
+        content = f.read()
+
+    return jsonify({"config": content})
+
+@app.route('/api/device/<instance>/<device_name>/validate', methods=['POST'])
+def validate_device(instance, device_name):
+    """Validate device configuration"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", instance_config["container"],
+             "esphome", "config", f"/config/{device_name}.yaml"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        return jsonify({
+            "success": result.returncode == 0,
+            "output": result.stdout + result.stderr
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/device/<instance>/<device_name>/compile', methods=['POST'])
+def compile_device(instance, device_name):
+    """Compile device firmware"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", instance_config["container"],
+             "esphome", "compile", f"/config/{device_name}.yaml"],
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+
+        return jsonify({
+            "success": result.returncode == 0,
+            "output": result.stdout + result.stderr
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/device/<instance>/<device_name>/upload', methods=['POST'])
+def upload_device(instance, device_name):
+    """Upload firmware to device (OTA)"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", instance_config["container"],
+             "esphome", "upload", f"/config/{device_name}.yaml", "--device", "OTA"],
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+
+        return jsonify({
+            "success": result.returncode == 0,
+            "output": result.stdout + result.stderr
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/device/<instance>/<device_name>/logs')
+def get_device_logs(instance, device_name):
+    """Get device logs (streaming)"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", instance_config["container"],
+             "esphome", "logs", f"/config/{device_name}.yaml", "--no-color"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        return jsonify({
+            "logs": result.stdout
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/device/<instance>/<device_name>/clean', methods=['POST'])
+def clean_device(instance, device_name):
+    """Clean device build files"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", instance_config["container"],
+             "esphome", "clean", f"/config/{device_name}.yaml"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        return jsonify({
+            "success": result.returncode == 0,
+            "output": result.stdout + result.stderr
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ============================================================================
 # ENTRY POINT

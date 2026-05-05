@@ -871,6 +871,58 @@ def clean_device(instance, device_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/device/<instance>/<device_name>/firmware')
+def download_firmware(instance, device_name):
+    """Download compiled firmware binary for UART flashing"""
+    instance_config = get_instance_config(instance)
+    if not instance_config:
+        return jsonify({"error": "Instance not found"}), 404
+
+    try:
+        config_dir = Path(instance_config["config_dir"])
+        build_dir = config_dir / ".esphome" / "build" / device_name
+
+        # Check if device has been compiled
+        if not build_dir.exists():
+            return jsonify({
+                "error": "Device has not been compiled yet. Click 'Compile' first, then download firmware."
+            }), 404
+
+        # Common firmware locations - try multiple naming conventions
+        firmware_paths = [
+            build_dir / ".pioenvs" / device_name / "firmware.bin",
+            build_dir / ".pioenvs" / device_name / "firmware.factory.bin",
+            build_dir / ".pioenvs" / device_name / "firmware-factory.bin",
+            build_dir / "firmware.bin",
+            build_dir / "firmware.factory.bin",
+        ]
+
+        # Find first existing firmware
+        for firmware_path in firmware_paths:
+            if firmware_path.exists():
+                return send_from_directory(
+                    firmware_path.parent,
+                    firmware_path.name,
+                    as_attachment=True,
+                    download_name=f"{device_name}_firmware.bin"
+                )
+
+        # Build directory exists but no firmware found
+        pioenvs_dir = build_dir / ".pioenvs" / device_name
+        available_files = []
+        if pioenvs_dir.exists():
+            available_files = [f.name for f in pioenvs_dir.iterdir() if f.is_file()]
+
+        return jsonify({
+            "error": "Firmware binary not found in expected locations.",
+            "build_dir": str(build_dir),
+            "available_files": available_files,
+            "hint": "Try compiling the device again."
+        }), 404
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ============================================================================
 # COMMON FILES MANAGEMENT
 # ============================================================================

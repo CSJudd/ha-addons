@@ -251,86 +251,31 @@ def run_ssh_mode(config: dict):
 # ============================================================================
 
 def run_original_code(config: dict):
-    """Run the original addon code with adapted environment"""
+    """Run the standalone-optimized updater script"""
     import subprocess
 
     # Create fake addon environment
     env, work_dir = create_addon_environment(config)
 
-    # Find the original updater script
-    script_dir = Path(__file__).parent.parent
-    original_script = script_dir / "esphome_smart_updater.py"
+    # Find the standalone updater script
+    script_dir = Path(__file__).parent
+    standalone_script = script_dir / "esphome_smart_updater_standalone.py"
 
-    if not original_script.exists():
-        print(f"ERROR: Original updater script not found: {original_script}", file=sys.stderr)
+    if not standalone_script.exists():
+        print(f"ERROR: Standalone updater script not found: {standalone_script}", file=sys.stderr)
         sys.exit(1)
 
-    # Create a wrapper script that patches paths
-    wrapper_script = work_dir / "wrapper.py"
-    wrapper_script.write_text(f"""#!/usr/bin/env python3
-import sys
-from pathlib import Path
-
-# Patch paths for standalone mode
-ADDON_OPTIONS_PATH = Path("{env['ESPHOME_UPDATER_DATA_DIR']}/options.json")
-STATE_PATH         = Path("{config['state_dir']}/state.json")
-LOG_FILE           = Path("{config['log_dir']}/esphome_smart_update.log")
-PROGRESS_FILE      = Path("{config['state_dir']}/esphome_update_progress.json")
-ESPHOME_CONFIG_DIR = Path("{config['esphome_config_dir']}")
-DASHBOARD_JSON     = ESPHOME_CONFIG_DIR / ".dashboard.json"
-
-# Inject into module namespace
-import types
-sys.modules['__patch__'] = types.ModuleType('__patch__')
-sys.modules['__patch__'].ADDON_OPTIONS_PATH = ADDON_OPTIONS_PATH
-sys.modules['__patch__'].STATE_PATH = STATE_PATH
-sys.modules['__patch__'].LOG_FILE = LOG_FILE
-sys.modules['__patch__'].PROGRESS_FILE = PROGRESS_FILE
-sys.modules['__patch__'].ESPHOME_CONFIG_DIR = ESPHOME_CONFIG_DIR
-sys.modules['__patch__'].DASHBOARD_JSON = DASHBOARD_JSON
-
-# Now load and patch the original script
-with open("{original_script}") as f:
-    code = f.read()
-
-# Replace path constants
-code = code.replace(
-    'ADDON_OPTIONS_PATH = Path("/data/options.json")',
-    'from __patch__ import ADDON_OPTIONS_PATH'
-)
-code = code.replace(
-    'STATE_PATH         = Path("/data/state.json")',
-    'from __patch__ import STATE_PATH'
-)
-code = code.replace(
-    'LOG_FILE           = Path("/config/esphome_smart_update.log")',
-    'from __patch__ import LOG_FILE'
-)
-code = code.replace(
-    'PROGRESS_FILE      = Path("/config/esphome_update_progress.json")',
-    'from __patch__ import PROGRESS_FILE'
-)
-code = code.replace(
-    'ESPHOME_CONFIG_DIR = Path("/config/esphome")',
-    'from __patch__ import ESPHOME_CONFIG_DIR'
-)
-code = code.replace(
-    'DASHBOARD_JSON     = ESPHOME_CONFIG_DIR / ".dashboard.json"',
-    'from __patch__ import DASHBOARD_JSON'
-)
-
-# Execute the patched code
-exec(code)
-""")
+    # Set container path mapping for Codex (no /esphome subdirectory)
+    env["ESPHOME_CONTAINER_PATH"] = "/config"
 
     # Ensure directories exist
     Path(config["state_dir"]).mkdir(parents=True, exist_ok=True)
     Path(config["log_dir"]).mkdir(parents=True, exist_ok=True)
 
-    # Run the wrapper
+    # Run the standalone script directly
     try:
         result = subprocess.run(
-            [sys.executable, str(wrapper_script)],
+            [sys.executable, str(standalone_script)],
             env=env
         )
         return result.returncode

@@ -30,3 +30,12 @@ database:
 server:
   host: "127.0.0.1"
   port: 8081
+
+homeassistant:
+  url: "http://haos.grid.foxrunn.net:8123"
+  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI3ZDlkZTU5YTc3NDc0OGI0OThjNmYwMTJjN2RjOTcxYiIsImlhdCI6MTc0MTY0MDA5MywiZXhwIjoyMDU3MDAwMDkzfQ.3HOXfKgN7-wkrQACzfPeqWJCVceGx1KY3aRwzuLtJBk"
+
+settings:
+  ping_workers: 100
+  compile_timeout: 300
+  upload_timeout: 300

@@ -158,6 +158,38 @@ def init_db():
         )
     ''')
 
+    # Bulk operations log table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS fleet_manager.operations (
+            id SERIAL PRIMARY KEY,
+            operation_type TEXT NOT NULL,
+            device_count INTEGER NOT NULL,
+            success_count INTEGER DEFAULT 0,
+            failure_count INTEGER DEFAULT 0,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            status TEXT DEFAULT 'running',
+            triggered_by TEXT,
+            notes TEXT
+        )
+    ''')
+
+    # Per-device operation results table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS fleet_manager.operation_results (
+            id SERIAL PRIMARY KEY,
+            operation_id INTEGER REFERENCES fleet_manager.operations(id) ON DELETE CASCADE,
+            device_name TEXT NOT NULL,
+            instance TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            output TEXT,
+            started_at TIMESTAMP,
+            completed_at TIMESTAMP,
+            duration_seconds INTEGER
+        )
+    ''')
+
     # Update campaigns table
     c.execute('''
         CREATE TABLE IF NOT EXISTS fleet_manager.campaigns (
@@ -879,6 +911,162 @@ def get_ha_versions():
                     versions[device_name] = version
 
         return jsonify({"versions": versions, "count": len(versions)})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# SETTINGS & CONFIGURATION API
+# ============================================================================
+
+@app.route('/api/config')
+def get_config():
+    """Get dashboard configuration for Settings UI"""
+    # Return safe config (without sensitive data like passwords)
+    safe_config = {
+        "instances": CONFIG.get("instances", []),
+        "homeassistant": CONFIG.get("homeassistant", {}),
+        "settings": CONFIG.get("settings", {
+            "ping_workers": 100,
+            "compile_timeout": 300,
+            "upload_timeout": 300
+        })
+    }
+    return jsonify(safe_config)
+
+@app.route('/api/config', methods=['POST'])
+def update_config():
+    """Update dashboard configuration"""
+    try:
+        data = request.json
+
+        # Update in-memory config
+        if "instances" in data:
+            CONFIG["instances"] = data["instances"]
+        if "homeassistant" in data:
+            CONFIG["homeassistant"] = data["homeassistant"]
+        if "settings" in data:
+            CONFIG["settings"] = data["settings"]
+
+        # Write to file
+        with CONFIG_FILE.open('w') as f:
+            yaml.dump(CONFIG, f, default_flow_style=False)
+
+        return jsonify({"success": True, "message": "Configuration updated"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+# BULK OPERATIONS API
+# ============================================================================
+
+@app.route('/api/bulk-operation', methods=['POST'])
+def start_bulk_operation():
+    """Start a bulk operation (compile/upload/validate) on multiple devices"""
+    try:
+        data = request.json
+        operation_type = data.get("operation")  # compile, upload, validate
+        device_list = data.get("devices", [])  # List of {instance, name}
+
+        if not operation_type or not device_list:
+            return jsonify({"error": "Missing operation or devices"}), 400
+
+        # Create operation log in database
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO fleet_manager.operations
+            (operation_type, device_count, status, triggered_by)
+            VALUES (%s, %s, 'running', 'web-ui')
+            RETURNING id
+        ''', (operation_type, len(device_list)))
+        operation_id = c.fetchone()[0]
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "operation_id": operation_id,
+            "message": f"Started {operation_type} on {len(device_list)} devices"
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/operations')
+def get_operations():
+    """Get operation history"""
+    try:
+        limit = request.args.get('limit', 50, type=int)
+
+        conn = get_db_connection()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+        c.execute('''
+            SELECT id, operation_type, device_count, success_count, failure_count,
+                   started_at, completed_at, status, triggered_by
+            FROM fleet_manager.operations
+            ORDER BY started_at DESC
+            LIMIT %s
+        ''', (limit,))
+        operations = c.fetchall()
+        conn.close()
+
+        # Convert to JSON-serializable format
+        for op in operations:
+            if op['started_at']:
+                op['started_at'] = op['started_at'].isoformat()
+            if op['completed_at']:
+                op['completed_at'] = op['completed_at'].isoformat()
+
+        return jsonify({"operations": operations})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/operations/<int:operation_id>')
+def get_operation_details(operation_id):
+    """Get detailed results for a specific operation"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get operation info
+        c.execute('''
+            SELECT * FROM fleet_manager.operations WHERE id = %s
+        ''', (operation_id,))
+        operation = c.fetchone()
+
+        if not operation:
+            return jsonify({"error": "Operation not found"}), 404
+
+        # Get device results
+        c.execute('''
+            SELECT device_name, instance, status, error_message,
+                   started_at, completed_at, duration_seconds
+            FROM fleet_manager.operation_results
+            WHERE operation_id = %s
+            ORDER BY completed_at DESC
+        ''', (operation_id,))
+        results = c.fetchall()
+        conn.close()
+
+        # Convert timestamps
+        if operation['started_at']:
+            operation['started_at'] = operation['started_at'].isoformat()
+        if operation['completed_at']:
+            operation['completed_at'] = operation['completed_at'].isoformat()
+
+        for result in results:
+            if result['started_at']:
+                result['started_at'] = result['started_at'].isoformat()
+            if result['completed_at']:
+                result['completed_at'] = result['completed_at'].isoformat()
+
+        return jsonify({
+            "operation": operation,
+            "results": results
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -763,7 +763,7 @@ def upload_device(instance, device_name):
 
 @app.route('/api/device/<instance>/<device_name>/upload/stream', methods=['GET', 'POST'])
 def upload_device_stream(instance, device_name):
-    """Upload firmware to device (OTA) with real-time streaming output"""
+    """Upload firmware to device (OTA) - blocking, returns output when done"""
     instance_config = get_instance_config(instance)
     if not instance_config:
         return jsonify({"error": "Instance not found"}), 404
@@ -781,45 +781,35 @@ def upload_device_stream(instance, device_name):
                     substitutions = config.get("substitutions", {})
                     pinned_version = substitutions.get("esphome_version", "*")
 
-            # Build command with unbuffered output using stdbuf
+            # Build simple command
             if pinned_version and pinned_version != "*":
-                cmd = ["stdbuf", "-oL", "-eL",
-                       "docker", "run", "--rm", "--network", "host",
-                       "-e", "PYTHONUNBUFFERED=1",
+                cmd = ["docker", "run", "--rm", "--network", "host",
                        "-v", f"{config_dir}:/config",
                        f"esphome/esphome:{pinned_version}",
-                       "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
+                       "run", f"/config/{device_name}.yaml", "--device", "OTA"]
             else:
-                cmd = ["stdbuf", "-oL", "-eL",
-                       "docker", "exec",
-                       "-e", "PYTHONUNBUFFERED=1",
-                       instance_config["container"],
-                       "esphome", "upload", f"/config/{device_name}.yaml", "--device", "OTA"]
+                cmd = ["docker", "exec", instance_config["container"],
+                       "esphome", "run", f"/config/{device_name}.yaml", "--device", "OTA"]
 
-            # Start process with real-time output
-            import os
-            env = os.environ.copy()
-            env['PYTHONUNBUFFERED'] = '1'
-
-            process = subprocess.Popen(
+            # Blocking run - wait for completion
+            result = subprocess.run(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                capture_output=True,
                 text=True,
-                bufsize=0,  # Completely unbuffered
-                env=env
+                timeout=600  # 10 minute timeout for upload
             )
 
-            # Stream output line by line
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
-
-            process.wait()
+            # Send all output at once
+            output = result.stdout + result.stderr
+            for line in output.split('\n'):
+                if line.strip():
+                    yield f"data: {json.dumps({'line': line})}\n\n"
 
             # Send completion status
-            yield f"data: {json.dumps({'done': True, 'success': process.returncode == 0})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'success': result.returncode == 0})}\n\n"
 
+        except subprocess.TimeoutExpired:
+            yield f"data: {json.dumps({'error': 'Upload timeout (10 minutes)'})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 

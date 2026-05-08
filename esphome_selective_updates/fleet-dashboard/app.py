@@ -225,22 +225,25 @@ def check_device_online(ip: str) -> str:
     import socket
 
     for attempt in range(2):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3)
+        sock = None
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
             result = sock.connect_ex((ip, 6053))
-            sock.close()
             if result == 0:
                 return "online"
-            # First attempt failed, retry once
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-        except:
-            sock.close()
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
+        except Exception:
+            pass
+        finally:
+            if sock:
+                try:
+                    sock.close()
+                except:
+                    pass
+
+        # First attempt failed, retry once
+        if attempt == 0:
+            time.sleep(0.5)
 
     return "offline"
 

@@ -48,6 +48,10 @@
                             class="px-4 py-2 bg-blue-500 hover:bg-blue-400 rounded-lg transition">
                         🔄 Refresh
                     </button>
+                    <button @click="showNewDeviceModal()"
+                            class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg transition">
+                        ➕ New Device
+                    </button>
                     <div class="text-sm">
                         <span x-text="filteredDevices.length"></span> devices
                     </div>
@@ -180,6 +184,10 @@
                     <button @click="bulkDownload()"
                             class="px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition">
                         💾 Download (Compile/Save)
+                    </button>
+                    <button @click="bulkDelete()"
+                            class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
+                        🗑️ Delete
                     </button>
                     <button @click="clearSelection()"
                             class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
@@ -909,6 +917,14 @@
                             <span class="mr-2">✏️</span> Edit Config
                         </button>
                     </div>
+
+                    <!-- Danger Zone -->
+                    <div class="mt-4 pt-4 border-t border-red-200">
+                        <button @click="deleteDevice()"
+                                class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition flex items-center">
+                            <span class="mr-2">🗑️</span> Delete Device
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Action Output / Edit Mode -->
@@ -1056,6 +1072,153 @@
         </div>
     </div>
 
+    <!-- New Device Modal -->
+    <div x-show="newDeviceModal.show"
+         x-cloak
+         class="fixed inset-0 z-50 overflow-y-auto"
+         @keydown.escape.window="closeNewDeviceModal()">
+        <!-- Backdrop -->
+        <div class="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
+             @click="closeNewDeviceModal()"></div>
+
+        <!-- Modal Content -->
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="relative bg-white rounded-lg shadow-xl max-w-2xl w-full"
+                 @click.stop>
+                <!-- Header -->
+                <div class="flex items-center justify-between px-6 py-4 border-b bg-green-50">
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-900">➕ Create New Device</h2>
+                        <p class="text-sm text-gray-500">Add a new ESPHome device configuration</p>
+                    </div>
+                    <button @click="closeNewDeviceModal()"
+                            class="text-gray-400 hover:text-gray-600">
+                        <span class="text-2xl">&times;</span>
+                    </button>
+                </div>
+
+                <!-- Form -->
+                <div class="px-6 py-4">
+                    <div class="space-y-4">
+                        <!-- Device Name (YAML filename) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Device Name (YAML filename) <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   x-model="newDeviceModal.device_name"
+                                   placeholder="e.g., smd002"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                                   pattern="[a-z0-9_-]+"
+                                   title="Lowercase letters, numbers, dashes, and underscores only">
+                            <p class="text-xs text-gray-500 mt-1">Lowercase, alphanumeric, dashes, underscores only</p>
+                        </div>
+
+                        <!-- Friendly Name -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Friendly Name <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   x-model="newDeviceModal.friendly_name"
+                                   placeholder="e.g., Sensor Monitor Device 002"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                        </div>
+
+                        <!-- Board Type -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Board Type <span class="text-red-500">*</span>
+                            </label>
+                            <select x-model="newDeviceModal.board"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                                <option value="esp32dev">ESP32 Dev Module</option>
+                                <option value="esp32-c3-devkitm-1">ESP32-C3 DevKit</option>
+                                <option value="esp32-s2-saola-1">ESP32-S2 Saola</option>
+                                <option value="esp32-s3-devkitc-1">ESP32-S3 DevKit</option>
+                                <option value="nodemcuv2">NodeMCU (ESP8266)</option>
+                                <option value="d1_mini">D1 Mini (ESP8266)</option>
+                                <option value="pico">Raspberry Pi Pico W</option>
+                            </select>
+                        </div>
+
+                        <!-- Device Type -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Device Type <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   x-model="newDeviceModal.device_type"
+                                   placeholder="e.g., Sensor Monitor Device"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                        </div>
+
+                        <!-- Area -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Area <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   x-model="newDeviceModal.area"
+                                   placeholder="e.g., Outside"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                        </div>
+
+                        <!-- Physical Location (optional) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Physical Location (optional)
+                            </label>
+                            <input type="text"
+                                   x-model="newDeviceModal.physical_location"
+                                   placeholder="e.g., Driveway Loop near road"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                        </div>
+
+                        <!-- Static IP (optional) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Static IP (optional)
+                            </label>
+                            <input type="text"
+                                   x-model="newDeviceModal.static_ip"
+                                   placeholder="e.g., 192.168.1.100"
+                                   pattern="(\d{1,3}\.){3}\d{1,3}"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                            <p class="text-xs text-gray-500 mt-1">Leave empty for DHCP</p>
+                        </div>
+
+                        <!-- ESPHome Version -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                ESPHome Version
+                            </label>
+                            <input type="text"
+                                   x-model="newDeviceModal.esphome_version"
+                                   placeholder="e.g., 2026.4.0"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <div class="flex justify-end space-x-3 px-6 py-4 border-t bg-gray-50">
+                    <button @click="closeNewDeviceModal()"
+                            :disabled="newDeviceModal.loading"
+                            class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:opacity-50">
+                        Cancel
+                    </button>
+                    <button @click="createNewDevice()"
+                            :disabled="newDeviceModal.loading"
+                            class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">
+                        <span x-show="!newDeviceModal.loading">Create Device</span>
+                        <span x-show="newDeviceModal.loading">Creating...</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         function fleetManager() {
             return {
@@ -1088,6 +1251,18 @@
                     output: '',
                     editMode: false,
                     originalOutput: ''
+                },
+                newDeviceModal: {
+                    show: false,
+                    loading: false,
+                    device_name: '',
+                    friendly_name: '',
+                    board: 'esp32dev',
+                    device_type: '',
+                    area: '',
+                    physical_location: '',
+                    static_ip: '',
+                    esphome_version: '2026.4.0'
                 },
                 activeTab: 'devices',
                 commonFiles: {
@@ -1147,7 +1322,8 @@
                 async loadInstances() {
                     try {
                         const response = await fetch('/api/instances');
-                        this.instances = await response.json();
+                        const data = await response.json();
+                        this.instances = data.instances || data;
                     } catch (error) {
                         console.error('Error loading instances:', error);
                     }
@@ -1314,6 +1490,69 @@
                     this.deviceModal.loading = false;
                 },
 
+                showNewDeviceModal() {
+                    // Reset form
+                    this.newDeviceModal = {
+                        show: true,
+                        loading: false,
+                        device_name: '',
+                        friendly_name: '',
+                        board: 'esp32dev',
+                        device_type: '',
+                        area: '',
+                        physical_location: '',
+                        static_ip: '',
+                        esphome_version: '2026.4.0'
+                    };
+                },
+
+                closeNewDeviceModal() {
+                    this.newDeviceModal.show = false;
+                },
+
+                async createNewDevice() {
+                    if (!this.newDeviceModal.device_name || !this.newDeviceModal.friendly_name ||
+                        !this.newDeviceModal.device_type || !this.newDeviceModal.area) {
+                        alert('Please fill in all required fields');
+                        return;
+                    }
+
+                    this.newDeviceModal.loading = true;
+
+                    try {
+                        const response = await fetch(`/api/device/${this.currentInstance}/create`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                device_name: this.newDeviceModal.device_name,
+                                friendly_name: this.newDeviceModal.friendly_name,
+                                board: this.newDeviceModal.board,
+                                device_type: this.newDeviceModal.device_type,
+                                area: this.newDeviceModal.area,
+                                physical_location: this.newDeviceModal.physical_location,
+                                static_ip: this.newDeviceModal.static_ip,
+                                esphome_version: this.newDeviceModal.esphome_version
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (response.ok) {
+                            alert(`✅ Device created successfully: ${data.device_name}.yaml`);
+                            this.closeNewDeviceModal();
+                            await this.refreshDevices();
+                        } else {
+                            alert(`❌ Error: ${data.error}`);
+                        }
+                    } catch (error) {
+                        alert(`❌ Failed to create device: ${error.message}`);
+                    } finally {
+                        this.newDeviceModal.loading = false;
+                    }
+                },
+
                 async deviceAction(action) {
                     const device = this.deviceModal.device;
                     if (!device) return;
@@ -1459,7 +1698,30 @@
 
                                 if (response.ok) {
                                     this.deviceModal.output += '✅ Firmware ready! Starting download...\n';
-                                    window.open(firmwareUrl, '_blank');
+
+                                    // Extract filename from Content-Disposition header
+                                    const contentDisposition = response.headers.get('content-disposition');
+                                    let filename = `${deviceName}_firmware.bin`;
+                                    if (contentDisposition) {
+                                        const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/);
+                                        if (filenameMatch) {
+                                            filename = filenameMatch[1];
+                                        }
+                                    }
+
+                                    // Download as blob to avoid popup blocker
+                                    const blob = await response.blob();
+                                    const url = window.URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.style.display = 'none';
+                                    a.href = url;
+                                    a.download = filename;
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    window.URL.revokeObjectURL(url);
+                                    document.body.removeChild(a);
+
+                                    this.deviceModal.output += '✅ Download started!\n';
                                 } else {
                                     const errorData = await response.json();
                                     this.deviceModal.output += `\n❌ Firmware not found: ${errorData.error || 'Unknown error'}`;
@@ -1503,8 +1765,27 @@
                         const response = await fetch(url);
 
                         if (response.ok) {
-                            // Firmware exists, trigger download
-                            window.open(url, '_blank');
+                            // Extract filename from Content-Disposition header
+                            const contentDisposition = response.headers.get('content-disposition');
+                            let filename = `${deviceName}_firmware.bin`;
+                            if (contentDisposition) {
+                                const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/);
+                                if (filenameMatch) {
+                                    filename = filenameMatch[1];
+                                }
+                            }
+
+                            // Firmware exists, trigger download as blob
+                            const blob = await response.blob();
+                            const blobUrl = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.style.display = 'none';
+                            a.href = blobUrl;
+                            a.download = filename;
+                            document.body.appendChild(a);
+                            a.click();
+                            window.URL.revokeObjectURL(blobUrl);
+                            document.body.removeChild(a);
                         } else if (response.status === 404) {
                             // Firmware doesn't exist, compile first
                             const data = await response.json();
@@ -1587,6 +1868,51 @@
                 cancelEdit() {
                     this.deviceModal.editMode = false;
                     this.deviceModal.output = this.deviceModal.originalOutput;
+                },
+
+                async deleteDevice() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    const deviceName = device.yaml_filename || device.name;
+                    const confirmed = confirm(
+                        `⚠️ DELETE DEVICE: ${device.friendly_name || device.name}\n\n` +
+                        `This will permanently delete:\n` +
+                        `• ${deviceName}.yaml configuration file\n` +
+                        `• Build files and cache\n` +
+                        `• Storage metadata\n\n` +
+                        `This action CANNOT be undone!\n\n` +
+                        `Are you sure you want to delete this device?`
+                    );
+
+                    if (!confirmed) return;
+
+                    // Double confirmation for safety
+                    const doubleConfirm = confirm(
+                        `🚨 FINAL CONFIRMATION\n\n` +
+                        `Type "DELETE" to confirm deletion of ${deviceName}.yaml\n\n` +
+                        `Last chance to cancel!`
+                    );
+
+                    if (!doubleConfirm) return;
+
+                    try {
+                        const response = await fetch(`/api/device/${device.instance}/${deviceName}/delete`, {
+                            method: 'DELETE'
+                        });
+
+                        const data = await response.json();
+
+                        if (response.ok) {
+                            alert(`✅ ${data.message}`);
+                            this.closeDeviceModal();
+                            await this.refreshDevices();
+                        } else {
+                            alert(`❌ Error: ${data.error}`);
+                        }
+                    } catch (error) {
+                        alert(`❌ Failed to delete device: ${error.message}`);
+                    }
                 },
 
                 async saveConfig() {
@@ -1954,6 +2280,91 @@
 
                     // Add message to progress modal about downloads
                     alert('💡 Tip: After compile completes, download firmware from History tab → View Details → Download links per device');
+                },
+
+                async bulkDelete() {
+                    if (this.selectedDevices.length === 0) {
+                        alert('Please select devices first');
+                        return;
+                    }
+
+                    const deviceNames = this.devices
+                        .filter(d => this.selectedDevices.includes(d.name))
+                        .map(d => d.name)
+                        .join(', ');
+
+                    const confirmed = confirm(
+                        `⚠️ BULK DELETE WARNING\n\n` +
+                        `You are about to permanently delete ${this.selectedDevices.length} devices:\n\n` +
+                        `${deviceNames}\n\n` +
+                        `This will delete:\n` +
+                        `• YAML configuration files\n` +
+                        `• Build files and cache\n` +
+                        `• Storage metadata\n\n` +
+                        `THIS CANNOT BE UNDONE!\n\n` +
+                        `Are you sure you want to continue?`
+                    );
+
+                    if (!confirmed) return;
+
+                    // Double confirmation for bulk delete
+                    const doubleConfirm = confirm(
+                        `🚨 FINAL CONFIRMATION\n\n` +
+                        `Deleting ${this.selectedDevices.length} devices.\n\n` +
+                        `Last chance to cancel!`
+                    );
+
+                    if (!doubleConfirm) return;
+
+                    try {
+                        // Build device list
+                        const deviceList = this.devices
+                            .filter(d => this.selectedDevices.includes(d.name))
+                            .map(d => ({
+                                instance: d.instance,
+                                name: d.yaml_filename || d.name
+                            }));
+
+                        // Start bulk delete operation
+                        const response = await fetch('/api/bulk-operation', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                operation: 'delete',
+                                devices: deviceList
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            // Show progress modal
+                            this.bulkProgress = {
+                                show: true,
+                                operationId: data.operation_id,
+                                operation: 'delete',
+                                status: 'running',
+                                total: deviceList.length,
+                                completed: 0,
+                                success: 0,
+                                failed: 0,
+                                inProgress: deviceList.length,
+                                results: [],
+                                pollInterval: null
+                            };
+
+                            // Start polling for progress
+                            this.pollBulkProgress();
+
+                            // Clear selection
+                            this.selectedDevices = [];
+                        } else {
+                            alert('❌ Failed to start delete operation: ' + (data.error || 'Unknown error'));
+                        }
+                    } catch (error) {
+                        console.error('Error starting bulk delete:', error);
+                        alert('❌ Error: ' + error.message);
+                    }
                 },
 
                 async pollBulkProgress() {

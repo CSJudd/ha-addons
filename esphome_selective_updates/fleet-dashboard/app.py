@@ -25,6 +25,7 @@ from pathlib import Path
 import json
 import subprocess
 import yaml
+import time
 from datetime import datetime
 from typing import List, Dict, Optional
 import psycopg2
@@ -1265,7 +1266,10 @@ def execute_bulk_operation(operation_id: int, operation_type: str, device_list: 
                         substitutions = config.get("substitutions", {})
                         pinned_version = substitutions.get("esphome_version", "*")
 
-                # Build command
+                # Build command - use 'run' for upload operations (compile+flash)
+                # to match the individual OTA behavior that works
+                actual_operation = "run" if operation_type == "upload" else operation_type
+
                 if pinned_version and pinned_version != "*":
                     cmd = ["docker", "run", "--rm"]
                     if operation_type == "upload":
@@ -1274,13 +1278,13 @@ def execute_bulk_operation(operation_id: int, operation_type: str, device_list: 
                     cmd.extend([
                         "-v", f"{config_dir}:/config",
                         f"esphome/esphome:{pinned_version}",
-                        operation_type, f"/config/{device_name}.yaml"
+                        actual_operation, f"/config/{device_name}.yaml"
                     ])
                     if operation_type == "upload":
                         cmd.extend(["--device", "OTA"])
                 else:
                     cmd = ["docker", "exec", instance_config["container"],
-                           "esphome", operation_type, f"/config/{device_name}.yaml"]
+                           "esphome", actual_operation, f"/config/{device_name}.yaml"]
                     if operation_type == "upload":
                         cmd.extend(["--device", "OTA"])
 
@@ -1313,6 +1317,9 @@ def execute_bulk_operation(operation_id: int, operation_type: str, device_list: 
                       (result.stdout + result.stderr)[:1000], start_time, end_time, duration))
                 conn.commit()
 
+                # CRITICAL: Delay between devices to prevent ESPHome state conflicts
+                time.sleep(3)
+
             except Exception as e:
                 failure_count += 1
                 end_time = datetime.now()
@@ -1324,6 +1331,9 @@ def execute_bulk_operation(operation_id: int, operation_type: str, device_list: 
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (operation_id, device_name, instance_slug, "failed", str(e)[:500], start_time, end_time, duration))
                 conn.commit()
+
+                # Delay after failure too
+                time.sleep(3)
 
         # Update operation status
         c.execute('''

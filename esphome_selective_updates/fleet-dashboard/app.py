@@ -223,13 +223,17 @@ def check_device_online(ip: str) -> str:
         return "unknown"
 
     import socket
+    import random
+
+    # Add small random delay to spread out connection attempts and reduce device overwhelm
+    time.sleep(random.uniform(0, 0.3))
 
     last_error = None
     for attempt in range(2):
         sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3)
+            sock.settimeout(5)  # Increased from 3s to 5s
             # Use connect() not connect_ex() for blocking sockets
             sock.connect((ip, 6053))
             sock.close()

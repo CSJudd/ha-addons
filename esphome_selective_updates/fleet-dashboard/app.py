@@ -1281,12 +1281,12 @@ def execute_bulk_operation(operation_id: int, operation_type: str, device_list: 
                         actual_operation, f"/config/{device_name}.yaml"
                     ])
                     if operation_type == "upload":
-                        cmd.extend(["--device", "OTA"])
+                        cmd.extend(["--device", "OTA", "--no-logs"])
                 else:
                     cmd = ["docker", "exec", instance_config["container"],
                            "esphome", actual_operation, f"/config/{device_name}.yaml"]
                     if operation_type == "upload":
-                        cmd.extend(["--device", "OTA"])
+                        cmd.extend(["--device", "OTA", "--no-logs"])
 
                 # Execute command
                 result = subprocess.run(

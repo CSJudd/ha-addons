@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 import aioesphomeapi
 import threading
+import requests
 
 # Add custom YAML constructors to handle ESPHome directives
 def include_constructor(loader, node):
@@ -217,50 +218,69 @@ def init_db():
 # DEVICE DISCOVERY
 # ============================================================================
 
-def check_device_online(ip: str) -> str:
-    """Check if device is online via ESPHome API port 6053 (retry once on failure)"""
-    if not ip:
+# Global cache for HA connection status
+_ha_status_cache = {}
+_ha_status_cache_time = 0
+
+def get_ha_device_status() -> Dict[str, str]:
+    """Query Home Assistant for ESPHome device connection status"""
+    global _ha_status_cache, _ha_status_cache_time
+
+    # Cache for 10 seconds to avoid hammering HA
+    if time.time() - _ha_status_cache_time < 10:
+        return _ha_status_cache
+
+    try:
+        # Query HA for all ESPHome connection status sensors
+        ha_url = "https://haos:8123/api/states"
+        ha_token = os.environ.get("HA_TOKEN", "")
+
+        headers = {
+            "Authorization": f"Bearer {ha_token}",
+            "Content-Type": "application/json"
+        }
+
+        response = requests.get(ha_url, headers=headers, timeout=5, verify=False)
+        if response.status_code == 200:
+            states = response.json()
+            status_map = {}
+
+            # Find all connection_status sensors and extract device names
+            for entity in states:
+                entity_id = entity.get("entity_id", "")
+                if "connection_status" in entity_id and entity_id.startswith("binary_sensor."):
+                    # Extract device name from entity_id
+                    # Format: binary_sensor.devicename_something_connection_status
+                    parts = entity_id.replace("binary_sensor.", "").split("_connection_status")[0]
+                    # Get the device name (first part before underscores for compound names)
+                    device_parts = parts.split("_")
+                    if device_parts:
+                        device_name = device_parts[0]  # e.g., "sp101", "mjs007"
+                        state = entity.get("state", "off")
+                        status_map[device_name] = "online" if state == "on" else "offline"
+
+            _ha_status_cache = status_map
+            _ha_status_cache_time = time.time()
+            return status_map
+    except Exception as e:
+        print(f"  Error querying HA for device status: {e}")
+
+    return {}
+
+def check_device_online(ip: str, device_name: str = "") -> str:
+    """Check if device is online via Home Assistant ESPHome integration"""
+    if not device_name:
         return "unknown"
 
-    import socket
-    import random
+    # Get status from HA
+    ha_status = get_ha_device_status()
 
-    # Add small random delay to spread out connection attempts and reduce device overwhelm
-    time.sleep(random.uniform(0, 0.3))
+    # Check if we have status for this device
+    if device_name in ha_status:
+        return ha_status[device_name]
 
-    last_error = None
-    for attempt in range(2):
-        sock = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)  # Increased from 3s to 5s
-            # Use connect() not connect_ex() for blocking sockets
-            sock.connect((ip, 6053))
-            sock.close()
-            return "online"
-        except socket.timeout:
-            last_error = "connection timeout"
-        except ConnectionRefusedError:
-            last_error = "connection refused"
-        except OSError as e:
-            last_error = f"OSError: {e}"
-        except Exception as e:
-            last_error = f"{type(e).__name__}: {e}"
-        finally:
-            if sock:
-                try:
-                    sock.close()
-                except:
-                    pass
-
-        # First attempt failed, retry once
-        if attempt == 0:
-            time.sleep(0.5)
-
-    # Log persistent failures for debugging
-    if last_error:
-        print(f"  {ip} offline: {last_error}")
-    return "offline"
+    # If no HA status, mark as unknown
+    return "unknown"
 
 async def get_device_version_async(ip: str, password: str = "") -> Optional[str]:
     """Query ESPHome device via API to get running version"""
@@ -375,24 +395,17 @@ def discover_devices(instance: Dict) -> List[Dict]:
             print(f"Error parsing {yaml_file}: {e}")
             continue
 
-    # Second pass: ping all devices in parallel
-    print(f"Checking status for {len(devices)} devices in {instance['name']}...")
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_device = {
-            executor.submit(check_device_online, device["ip_address"]): device
-            for device in devices
-        }
+    # Second pass: get device status from Home Assistant
+    print(f"Checking status for {len(devices)} devices in {instance['name']} via HA...")
+    ha_status = get_ha_device_status()
 
-        for future in as_completed(future_to_device):
-            device = future_to_device[future]
-            try:
-                device["status"] = future.result()
-            except Exception as e:
-                print(f"Error checking {device['name']}: {e}")
-                device["status"] = "unknown"
+    for device in devices:
+        device_name = device["name"]
+        device["status"] = check_device_online(device["ip_address"], device_name)
 
     online_count = sum(1 for d in devices if d["status"] == "online")
-    print(f"  {online_count}/{len(devices)} devices online")
+    unknown_count = sum(1 for d in devices if d["status"] == "unknown")
+    print(f"  {online_count}/{len(devices)} devices online ({unknown_count} unknown - not in HA)")
 
     return devices
 

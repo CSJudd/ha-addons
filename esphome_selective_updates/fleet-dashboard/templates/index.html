@@ -104,9 +104,10 @@
                 <div class="text-green-600 text-sm">Online</div>
                 <div class="text-3xl font-bold text-green-700" x-text="stats.online"></div>
             </div>
-            <div @click="selectStatFilter('offline')"
+            <div @click="selectStatFilter('offline'); refreshDevices()"
                  :class="selectedStatFilter === 'offline' ? 'ring-4 ring-red-500' : ''"
-                 class="bg-red-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
+                 class="bg-red-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all"
+                 title="Click to refresh device status">
                 <div class="text-red-600 text-sm">Offline</div>
                 <div class="text-3xl font-bold text-red-700" x-text="stats.offline"></div>
             </div>
@@ -1310,7 +1311,6 @@
                     results: [],
                     pollInterval: null
                 },
-                statusPollInterval: null,
 
                 async init() {
                     await this.loadInstances();
@@ -1318,10 +1318,6 @@
                     await this.loadDeviceTypes();
                     // Load HA versions in background
                     this.loadHAVersions();
-                    // Start periodic status polling (every 30 seconds)
-                    this.statusPollInterval = setInterval(() => {
-                        this.refreshDevices();
-                    }, 30000);
                 },
 
                 async loadInstances() {

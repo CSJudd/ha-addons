@@ -369,7 +369,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
 
     # Second pass: ping all devices in parallel
     print(f"Checking status for {len(devices)} devices in {instance['name']}...")
-    with ThreadPoolExecutor(max_workers=50) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_device = {
             executor.submit(check_device_online, device["ip_address"]): device
             for device in devices

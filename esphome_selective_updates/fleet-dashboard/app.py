@@ -232,7 +232,7 @@ def get_ha_device_status() -> Dict[str, str]:
 
     try:
         # Query HA for all ESPHome connection status sensors
-        ha_url = "https://haos:8123/api/states"
+        ha_url = "https://haos.grid.foxrunn.net:8123/api/states"
         ha_token = os.environ.get("HA_TOKEN", "")
 
         headers = {

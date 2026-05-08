@@ -218,24 +218,26 @@ def init_db():
 # ============================================================================
 
 def check_device_online(ip: str) -> str:
-    """Check if device is online via ping (3s timeout, retry once on failure)"""
+    """Check if device is online via ESPHome API port 6053 (retry once on failure)"""
     if not ip:
         return "unknown"
 
+    import socket
+
     for attempt in range(2):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
         try:
-            result = subprocess.run(
-                ["ping", "-c", "1", "-W", "3", ip],
-                capture_output=True,
-                timeout=4
-            )
-            if result.returncode == 0:
+            result = sock.connect_ex((ip, 6053))
+            sock.close()
+            if result == 0:
                 return "online"
             # First attempt failed, retry once
             if attempt == 0:
                 time.sleep(0.5)
                 continue
         except:
+            sock.close()
             if attempt == 0:
                 time.sleep(0.5)
                 continue

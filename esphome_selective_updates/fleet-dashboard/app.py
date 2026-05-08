@@ -1274,6 +1274,41 @@ def execute_bulk_operation(operation_id: int, operation_type: str, device_list: 
                 config_dir = Path(instance_config["config_dir"])
                 yaml_file = config_dir / f"{device_name}.yaml"
 
+                # Special handling for delete operations - just delete files, don't run esphome
+                if operation_type == "delete":
+                    import shutil
+
+                    # Delete YAML file
+                    if yaml_file.exists():
+                        yaml_file.unlink()
+
+                    # Delete storage JSON
+                    storage_json = config_dir / ".esphome" / "storage" / f"{device_name}.yaml.json"
+                    if storage_json.exists():
+                        storage_json.unlink()
+
+                    # Delete build directory (may have friendly name suffix)
+                    build_base = config_dir / ".esphome" / "build"
+                    if build_base.exists():
+                        for build_dir in build_base.glob(f"{device_name}*"):
+                            if build_dir.is_dir():
+                                shutil.rmtree(build_dir)
+
+                    end_time = datetime.now()
+                    duration = int((end_time - start_time).total_seconds())
+                    success_count += 1
+                    status = "success"
+                    error_msg = None
+
+                    # Store result
+                    c.execute('''
+                        INSERT INTO fleet_manager.operation_results
+                        (operation_id, device_name, instance, status, error_message, started_at, completed_at, duration_seconds)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', (operation_id, device_name, instance_slug, status, error_msg, start_time, end_time, duration))
+                    conn.commit()
+                    continue
+
                 # Check for pinned version
                 pinned_version = None
                 if yaml_file.exists():

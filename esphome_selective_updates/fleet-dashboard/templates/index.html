@@ -1310,6 +1310,7 @@
                     results: [],
                     pollInterval: null
                 },
+                statusPollInterval: null,
 
                 async init() {
                     await this.loadInstances();
@@ -1317,6 +1318,10 @@
                     await this.loadDeviceTypes();
                     // Load HA versions in background
                     this.loadHAVersions();
+                    // Start periodic status polling (every 30 seconds)
+                    this.statusPollInterval = setInterval(() => {
+                        this.refreshDevices();
+                    }, 30000);
                 },
 
                 async loadInstances() {
@@ -1606,6 +1611,9 @@
                                             this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
                                         }
                                     }
+
+                                    // Auto-refresh device list to show updated info
+                                    this.refreshDevices();
                                 } else if (data.type === 'error') {
                                     this.deviceModal.output += `\n❌ Error: ${data.data}`;
                                     ws.close();
@@ -1733,6 +1741,9 @@
                                     this.deviceModal.output += `\n❌ Compile failed with exit code ${data.code}`;
                                 }
                             }
+
+                            // Auto-refresh device list to show updated info
+                            await this.refreshDevices();
                         } else if (data.type === 'error') {
                             this.deviceModal.output += `\n❌ Error: ${data.data}`;
                             ws.close();
@@ -2387,6 +2398,8 @@
                         } else {
                             // Operation complete
                             console.log('✅ Bulk operation completed');
+                            // Auto-refresh device list to show updated info
+                            await this.refreshDevices();
                         }
                     } catch (error) {
                         console.error('Error polling progress:', error);

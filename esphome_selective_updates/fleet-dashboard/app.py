@@ -218,18 +218,29 @@ def init_db():
 # ============================================================================
 
 def check_device_online(ip: str) -> str:
-    """Check if device is online via ping (3s timeout)"""
+    """Check if device is online via ping (3s timeout, retry once on failure)"""
     if not ip:
         return "unknown"
-    try:
-        result = subprocess.run(
-            ["ping", "-c", "1", "-W", "3", ip],
-            capture_output=True,
-            timeout=4
-        )
-        return "online" if result.returncode == 0 else "offline"
-    except:
-        return "offline"
+
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                ["ping", "-c", "1", "-W", "3", ip],
+                capture_output=True,
+                timeout=4
+            )
+            if result.returncode == 0:
+                return "online"
+            # First attempt failed, retry once
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+        except:
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+
+    return "offline"
 
 async def get_device_version_async(ip: str, password: str = "") -> Optional[str]:
     """Query ESPHome device via API to get running version"""

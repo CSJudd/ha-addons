@@ -223,7 +223,9 @@ def check_device_online(ip: str) -> str:
         return "unknown"
 
     import socket
+    import errno
 
+    last_error = None
     for attempt in range(2):
         sock = None
         try:
@@ -232,8 +234,10 @@ def check_device_online(ip: str) -> str:
             result = sock.connect_ex((ip, 6053))
             if result == 0:
                 return "online"
-        except Exception:
-            pass
+            # Log connection failure reason
+            last_error = f"connect_ex returned {result} ({errno.errorcode.get(result, 'UNKNOWN')})"
+        except Exception as e:
+            last_error = f"exception: {type(e).__name__}: {e}"
         finally:
             if sock:
                 try:
@@ -245,6 +249,9 @@ def check_device_online(ip: str) -> str:
         if attempt == 0:
             time.sleep(0.5)
 
+    # Log persistent failures for debugging
+    if last_error:
+        print(f"  {ip} offline after 2 attempts: {last_error}")
     return "offline"
 
 async def get_device_version_async(ip: str, password: str = "") -> Optional[str]:

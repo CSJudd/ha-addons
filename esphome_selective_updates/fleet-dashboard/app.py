@@ -218,14 +218,14 @@ def init_db():
 # ============================================================================
 
 def check_device_online(ip: str) -> str:
-    """Check if device is online via ping (1s timeout)"""
+    """Check if device is online via ping (3s timeout)"""
     if not ip:
         return "unknown"
     try:
         result = subprocess.run(
-            ["ping", "-c", "1", "-W", "1", ip],
+            ["ping", "-c", "1", "-W", "3", ip],
             capture_output=True,
-            timeout=2
+            timeout=4
         )
         return "online" if result.returncode == 0 else "offline"
     except:
@@ -346,7 +346,7 @@ def discover_devices(instance: Dict) -> List[Dict]:
 
     # Second pass: ping all devices in parallel
     print(f"Checking status for {len(devices)} devices in {instance['name']}...")
-    with ThreadPoolExecutor(max_workers=100) as executor:
+    with ThreadPoolExecutor(max_workers=50) as executor:
         future_to_device = {
             executor.submit(check_device_online, device["ip_address"]): device
             for device in devices

@@ -267,20 +267,36 @@ def get_ha_device_status() -> Dict[str, str]:
 
     return {}
 
+def check_device_online_tcp(ip: str) -> str:
+    """Fallback: check device online via TCP port 6053 (for devices not in HA)"""
+    if not ip:
+        return "unknown"
+
+    import socket
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        sock.connect((ip, 6053))
+        sock.close()
+        return "online"
+    except:
+        return "offline"
+
 def check_device_online(ip: str, device_name: str = "") -> str:
-    """Check if device is online via Home Assistant ESPHome integration"""
+    """Check if device is online via Home Assistant ESPHome integration, fallback to TCP"""
     if not device_name:
         return "unknown"
 
     # Get status from HA
     ha_status = get_ha_device_status()
 
-    # Check if we have status for this device
+    # Check if we have status for this device in HA
     if device_name in ha_status:
         return ha_status[device_name]
 
-    # If no HA status, mark as unknown
-    return "unknown"
+    # Device not in HA - fall back to TCP port check for new/unadded devices
+    return check_device_online_tcp(ip)
 
 async def get_device_version_async(ip: str, password: str = "") -> Optional[str]:
     """Query ESPHome device via API to get running version"""

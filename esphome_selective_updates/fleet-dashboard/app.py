@@ -222,6 +222,10 @@ def init_db():
 _ha_status_cache = {}
 _ha_status_cache_time = 0
 
+# Global cache for ESPHome latest version
+_esphome_latest_version = None
+_esphome_version_cache_time = 0
+
 def get_ha_device_status() -> Dict[str, str]:
     """Query Home Assistant for ESPHome device connection status"""
     global _ha_status_cache, _ha_status_cache_time
@@ -266,6 +270,29 @@ def get_ha_device_status() -> Dict[str, str]:
         print(f"  Error querying HA for device status: {e}")
 
     return {}
+
+def get_latest_esphome_version() -> Optional[str]:
+    """Query GitHub API for latest ESPHome release"""
+    global _esphome_latest_version, _esphome_version_cache_time
+
+    # Cache for 1 hour to avoid hammering GitHub
+    if time.time() - _esphome_version_cache_time < 3600:
+        return _esphome_latest_version
+
+    try:
+        url = "https://api.github.com/repos/esphome/esphome/releases/latest"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            version = data.get("tag_name", "").lstrip("v")  # Remove 'v' prefix
+            _esphome_latest_version = version
+            _esphome_version_cache_time = time.time()
+            print(f"Latest ESPHome version: {version}")
+            return version
+    except Exception as e:
+        print(f"Error checking ESPHome releases: {e}")
+
+    return _esphome_latest_version
 
 def check_device_online_tcp(ip: str) -> str:
     """Fallback: check device online via TCP port 6053 (for devices not in HA)"""
@@ -1635,6 +1662,19 @@ class OperationDetailHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"error": str(e)})
 
+class ESPHomeVersionHandler(tornado.web.RequestHandler):
+    """Get latest ESPHome version from GitHub"""
+    def get(self):
+        try:
+            latest_version = get_latest_esphome_version()
+            self.write({
+                "latest_version": latest_version,
+                "checked_at": datetime.now().isoformat()
+            })
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
 # ============================================================================
 # APPLICATION
 # ============================================================================
@@ -1665,6 +1705,7 @@ def make_app():
         (r"/api/config", ConfigHandler),
         (r"/api/check-substitutions", CheckSubstitutionsHandler),
         (r"/api/ha/versions", HAVersionsHandler),
+        (r"/api/esphome/version", ESPHomeVersionHandler),
         (r"/api/bulk-operation", BulkOperationHandler),
         (r"/api/operations/([0-9]+)/progress", OperationProgressHandler),
         (r"/api/operations", OperationsHandler),

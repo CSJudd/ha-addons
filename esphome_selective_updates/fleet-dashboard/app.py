@@ -1666,11 +1666,7 @@ def get_builder_current_versions():
     """Get current ESPHome versions from running containers"""
     try:
         versions = {}
-        config_path = Path(__file__).parent / "config.json"
-        with open(config_path) as f:
-            config = json.load(f)
-
-        for instance in config.get("instances", []):
+        for instance in CONFIG.get("instances", []):
             container_name = instance.get("container")
             if not container_name:
                 continue

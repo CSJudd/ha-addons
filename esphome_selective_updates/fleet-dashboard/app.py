@@ -1109,8 +1109,24 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
             return self.write({"error": "Instance not found"})
 
         try:
+            # Get node_name from database (ESPHome uses node_name for build directories)
+            conn = get_db_connection()
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute("""
+                SELECT node_name FROM fleet_manager.devices
+                WHERE instance = %s AND name LIKE %s || '%'
+                LIMIT 1
+            """, (instance, device_name))
+            device = c.fetchone()
+            conn.close()
+
+            if not device:
+                self.set_status(404)
+                return self.write({"error": f"Device {device_name} not found in {instance}"})
+
+            node_name = device["node_name"]
             config_dir = Path(instance_config["config_dir"])
-            build_dir = config_dir / ".esphome" / "build" / device_name
+            build_dir = config_dir / ".esphome" / "build" / node_name
 
             if not build_dir.exists():
                 self.set_status(404)
@@ -1120,9 +1136,9 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
 
             # Common firmware locations
             firmware_paths = [
-                build_dir / ".pioenvs" / device_name / "firmware.bin",
-                build_dir / ".pioenvs" / device_name / "firmware.factory.bin",
-                build_dir / ".pioenvs" / device_name / "firmware-factory.bin",
+                build_dir / ".pioenvs" / node_name / "firmware.bin",
+                build_dir / ".pioenvs" / node_name / "firmware.factory.bin",
+                build_dir / ".pioenvs" / node_name / "firmware-factory.bin",
                 build_dir / "firmware.bin",
                 build_dir / "firmware.factory.bin",
             ]
@@ -1137,7 +1153,7 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
                     return
 
             # Build directory exists but no firmware found
-            pioenvs_dir = build_dir / ".pioenvs" / device_name
+            pioenvs_dir = build_dir / ".pioenvs" / node_name
             available_files = []
             if pioenvs_dir.exists():
                 available_files = [f.name for f in pioenvs_dir.iterdir() if f.is_file()]

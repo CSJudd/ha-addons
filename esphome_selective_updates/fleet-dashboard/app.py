@@ -1662,15 +1662,135 @@ class OperationDetailHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"error": str(e)})
 
+def get_builder_current_versions():
+    """Get current ESPHome versions from running containers"""
+    try:
+        versions = {}
+        config_path = Path(__file__).parent / "config.json"
+        with open(config_path) as f:
+            config = json.load(f)
+
+        for instance in config.get("instances", []):
+            container_name = instance.get("container")
+            if not container_name:
+                continue
+
+            try:
+                # Get container image
+                cmd = ["docker", "inspect", container_name, "--format={{.Config.Image}}"]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+                if result.returncode == 0:
+                    image = result.stdout.strip()
+                    # Extract version from image tag (e.g., ghcr.io/esphome/esphome:2026.4.3)
+                    if ":" in image:
+                        version = image.split(":")[-1]
+                        versions[instance.get("slug")] = version
+            except Exception as e:
+                print(f"  Error getting version for {container_name}: {e}")
+                continue
+
+        return versions
+    except Exception as e:
+        print(f"  Error getting builder versions: {e}")
+        return {}
+
 class ESPHomeVersionHandler(tornado.web.RequestHandler):
-    """Get latest ESPHome version from GitHub"""
+    """Get latest ESPHome version from GitHub and current builder versions"""
     def get(self):
         try:
             latest_version = get_latest_esphome_version()
+            current_versions = get_builder_current_versions()
             self.write({
                 "latest_version": latest_version,
+                "current_versions": current_versions,
                 "checked_at": datetime.now().isoformat()
             })
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+class UpdateBuilderHandler(tornado.web.RequestHandler):
+    """Update ESPHome builder container to a new version"""
+    def post(self):
+        try:
+            data = json.loads(self.request.body)
+            instance_slug = data.get("instance")
+            target_version = data.get("version")
+
+            if not instance_slug or not target_version:
+                self.set_status(400)
+                return self.write({"error": "Missing instance or version"})
+
+            instance = get_instance_config(instance_slug)
+            if not instance:
+                self.set_status(404)
+                return self.write({"error": f"Instance {instance_slug} not found"})
+
+            container_name = instance["container"]
+
+            # Get current container config
+            inspect_cmd = ["docker", "inspect", container_name, "--format={{json .HostConfig}}"]
+            result = subprocess.run(inspect_cmd, capture_output=True, text=True, timeout=10)
+
+            if result.returncode != 0:
+                self.set_status(500)
+                return self.write({"error": f"Failed to inspect container: {result.stderr}"})
+
+            config = json.loads(result.stdout)
+
+            # Pull new image
+            image = f"ghcr.io/esphome/esphome:{target_version}"
+            print(f"Pulling {image}...")
+            pull_result = subprocess.run(
+                ["docker", "pull", image],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if pull_result.returncode != 0:
+                self.set_status(500)
+                return self.write({"error": f"Failed to pull image: {pull_result.stderr}"})
+
+            # Stop and remove old container
+            print(f"Stopping {container_name}...")
+            subprocess.run(["docker", "stop", container_name], timeout=30)
+            subprocess.run(["docker", "rm", container_name], timeout=10)
+
+            # Recreate container with new image
+            binds = config.get("Binds", [])
+            port_bindings = config.get("PortBindings", {})
+            restart_policy = config.get("RestartPolicy", {}).get("Name", "unless-stopped")
+
+            cmd = ["docker", "run", "-d", "--name", container_name]
+            cmd.extend(["--restart", restart_policy])
+
+            for bind in binds:
+                cmd.extend(["-v", bind])
+
+            for container_port, host_bindings in port_bindings.items():
+                for binding in host_bindings:
+                    host_port = binding.get("HostPort")
+                    if host_port:
+                        cmd.extend(["-p", f"{host_port}:{container_port.split('/')[0]}"])
+
+            cmd.append(image)
+
+            print(f"Creating new container: {' '.join(cmd)}")
+            create_result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if create_result.returncode != 0:
+                self.set_status(500)
+                return self.write({"error": f"Failed to create container: {create_result.stderr}"})
+
+            self.write({
+                "success": True,
+                "instance": instance_slug,
+                "version": target_version,
+                "message": f"Updated {container_name} to {target_version}"
+            })
+
         except Exception as e:
             self.set_status(500)
             self.write({"error": str(e)})
@@ -1706,6 +1826,7 @@ def make_app():
         (r"/api/check-substitutions", CheckSubstitutionsHandler),
         (r"/api/ha/versions", HAVersionsHandler),
         (r"/api/esphome/version", ESPHomeVersionHandler),
+        (r"/api/esphome/update-builder", UpdateBuilderHandler),
         (r"/api/bulk-operation", BulkOperationHandler),
         (r"/api/operations/([0-9]+)/progress", OperationProgressHandler),
         (r"/api/operations", OperationsHandler),

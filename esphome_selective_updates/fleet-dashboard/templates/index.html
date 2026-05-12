@@ -802,8 +802,50 @@
                     </div>
                 </div>
 
+                <!-- Builder Version Management -->
+                <div class="bg-white rounded-lg shadow mt-6">
+                    <div class="px-6 py-4 border-b">
+                        <h3 class="text-lg font-semibold text-gray-900">ESPHome Builder Version</h3>
+                        <p class="text-sm text-gray-500 mt-1">Update Docker containers to latest ESPHome release</p>
+                    </div>
+                    <div class="px-6 py-4 space-y-4">
+                        <!-- Current Versions -->
+                        <div class="grid grid-cols-2 gap-4 pb-4 border-b">
+                            <div>
+                                <p class="text-xs font-medium text-gray-500 uppercase">Production Builder</p>
+                                <p class="text-sm text-gray-700 mt-1">
+                                    Version: <span x-text="currentBuilderVersions.production || 'Checking...'" class="font-mono font-bold" :class="currentBuilderVersions.production === latestESPHomeVersion ? 'text-green-600' : 'text-orange-600'"></span>
+                                </p>
+                            </div>
+                            <div>
+                                <p class="text-xs font-medium text-gray-500 uppercase">Lab Builder</p>
+                                <p class="text-sm text-gray-700 mt-1">
+                                    Version: <span x-text="currentBuilderVersions.lab || 'Checking...'" class="font-mono font-bold" :class="currentBuilderVersions.lab === latestESPHomeVersion ? 'text-green-600' : 'text-orange-600'"></span>
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- Update Section -->
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-gray-700">
+                                    Latest available: <span x-text="latestESPHomeVersion || 'Checking...'" class="font-bold text-blue-600 font-mono"></span>
+                                </p>
+                                <p class="text-xs text-gray-500 mt-1">
+                                    Both Production and Lab builders will be updated
+                                </p>
+                            </div>
+                            <button @click="updateBuilders()"
+                                    :disabled="!latestESPHomeVersion || !newVersionAvailable"
+                                    class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition font-medium">
+                                🔄 Update Builders
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Save Button -->
-                <div class="flex justify-end">
+                <div class="flex justify-end mt-6">
                     <button @click="saveSettings()"
                             class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
                         💾 Save All Settings
@@ -1340,6 +1382,7 @@
                     pollInterval: null
                 },
                 latestESPHomeVersion: null,
+                currentBuilderVersions: {},
                 newVersionAvailable: false,
 
                 async init() {
@@ -2128,12 +2171,15 @@
 
                         if (data.latest_version) {
                             this.latestESPHomeVersion = data.latest_version;
+                            this.currentBuilderVersions = data.current_versions || {};
 
-                            // Check if any device is using an older version
-                            // For now, just show the banner if we have the latest version
-                            // User can check against their pinned versions
-                            this.newVersionAvailable = true;
-                            console.log(`Latest ESPHome version: ${data.latest_version}`);
+                            // Check if any builder is behind
+                            const behindBuilders = Object.values(this.currentBuilderVersions).some(
+                                v => v !== data.latest_version
+                            );
+
+                            this.newVersionAvailable = behindBuilders;
+                            console.log(`Latest ESPHome version: ${data.latest_version}`, this.currentBuilderVersions);
                         }
                     } catch (error) {
                         console.error('Error checking ESPHome version:', error);
@@ -2175,6 +2221,63 @@
                     } catch (error) {
                         console.error('Error saving settings:', error);
                         alert('❌ Error saving settings: ' + error.message);
+                    }
+                },
+
+                async updateBuilders() {
+                    if (!this.latestESPHomeVersion) {
+                        alert('❌ Latest ESPHome version not available yet. Please wait a moment and try again.');
+                        return;
+                    }
+
+                    const confirmMsg = `This will update both Production and Lab ESPHome builders to version ${this.latestESPHomeVersion}.\n\n` +
+                                     `The containers will be stopped and recreated with the new version.\n\n` +
+                                     `Continue?`;
+
+                    if (!confirm(confirmMsg)) {
+                        return;
+                    }
+
+                    const instances = ['production', 'lab'];
+                    const results = [];
+
+                    for (const instance of instances) {
+                        try {
+                            console.log(`Updating ${instance} builder to ${this.latestESPHomeVersion}...`);
+
+                            const response = await fetch('/api/esphome/update-builder', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    instance: instance,
+                                    version: this.latestESPHomeVersion
+                                })
+                            });
+
+                            const result = await response.json();
+
+                            if (response.ok && result.success) {
+                                results.push(`✅ ${instance}: ${result.message}`);
+                                console.log(`Successfully updated ${instance}:`, result);
+                            } else {
+                                results.push(`❌ ${instance}: ${result.error || 'Unknown error'}`);
+                                console.error(`Failed to update ${instance}:`, result);
+                            }
+                        } catch (error) {
+                            results.push(`❌ ${instance}: ${error.message}`);
+                            console.error(`Error updating ${instance}:`, error);
+                        }
+                    }
+
+                    // Show results
+                    alert(results.join('\n\n'));
+
+                    // If successful, hide the version banner
+                    const allSuccess = results.every(r => r.startsWith('✅'));
+                    if (allSuccess) {
+                        this.newVersionAvailable = false;
                     }
                 },
 

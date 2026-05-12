@@ -836,9 +836,10 @@
                                 </p>
                             </div>
                             <button @click="updateBuilders()"
-                                    :disabled="!latestESPHomeVersion || !newVersionAvailable"
+                                    :disabled="!latestESPHomeVersion || !newVersionAvailable || updatingBuilders"
                                     class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition font-medium">
-                                🔄 Update Builders
+                                <span x-show="!updatingBuilders">🔄 Update Builders</span>
+                                <span x-show="updatingBuilders">⏳ Updating...</span>
                             </button>
                         </div>
                     </div>
@@ -1384,6 +1385,7 @@
                 latestESPHomeVersion: null,
                 currentBuilderVersions: {},
                 newVersionAvailable: false,
+                updatingBuilders: false,
 
                 async init() {
                     await this.loadInstances();
@@ -2230,20 +2232,27 @@
                         return;
                     }
 
+                    if (this.updatingBuilders) {
+                        return;
+                    }
+
                     const confirmMsg = `This will update both Production and Lab ESPHome builders to version ${this.latestESPHomeVersion}.\n\n` +
                                      `The containers will be stopped and recreated with the new version.\n\n` +
-                                     `Continue?`;
+                                     `This will take 2-3 minutes. The button will show "Updating..." status.\n\nContinue?`;
 
                     if (!confirm(confirmMsg)) {
                         return;
                     }
+
+                    this.updatingBuilders = true;
 
                     const instances = ['production', 'lab'];
                     const results = [];
 
                     for (const instance of instances) {
                         try {
-                            console.log(`Updating ${instance} builder to ${this.latestESPHomeVersion}...`);
+                            const instanceName = instance.charAt(0).toUpperCase() + instance.slice(1);
+                            console.log(`Updating ${instanceName} builder to ${this.latestESPHomeVersion}...`);
 
                             const response = await fetch('/api/esphome/update-builder', {
                                 method: 'POST',
@@ -2259,26 +2268,26 @@
                             const result = await response.json();
 
                             if (response.ok && result.success) {
-                                results.push(`✅ ${instance}: ${result.message}`);
-                                console.log(`Successfully updated ${instance}:`, result);
+                                results.push(`✅ ${instanceName}: Updated to ${this.latestESPHomeVersion}`);
+                                console.log(`Successfully updated ${instanceName}:`, result);
                             } else {
-                                results.push(`❌ ${instance}: ${result.error || 'Unknown error'}`);
-                                console.error(`Failed to update ${instance}:`, result);
+                                results.push(`❌ ${instanceName}: ${result.error || 'Unknown error'}`);
+                                console.error(`Failed to update ${instanceName}:`, result);
                             }
                         } catch (error) {
-                            results.push(`❌ ${instance}: ${error.message}`);
+                            const instanceName = instance.charAt(0).toUpperCase() + instance.slice(1);
+                            results.push(`❌ ${instanceName}: ${error.message}`);
                             console.error(`Error updating ${instance}:`, error);
                         }
                     }
 
-                    // Show results
-                    alert(results.join('\n\n'));
+                    this.updatingBuilders = false;
 
-                    // If successful, hide the version banner
-                    const allSuccess = results.every(r => r.startsWith('✅'));
-                    if (allSuccess) {
-                        this.newVersionAvailable = false;
-                    }
+                    // Refresh version check to show new versions
+                    await this.checkESPHomeVersion();
+
+                    // Show results after version refresh
+                    alert(results.join('\n\n'));
                 },
 
                 addInstance() {

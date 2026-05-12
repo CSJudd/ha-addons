@@ -1150,7 +1150,7 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
             for firmware_path in firmware_paths:
                 if firmware_path.exists():
                     self.set_header('Content-Type', 'application/octet-stream')
-                    self.set_header('Content-Disposition', f'attachment; filename="{device_name}_firmware.bin"')
+                    self.set_header('Content-Disposition', f'attachment; filename="{node_name}_firmware.bin"')
                     with firmware_path.open('rb') as f:
                         self.write(f.read())
                     return

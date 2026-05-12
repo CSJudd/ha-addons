@@ -1149,8 +1149,14 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
             # Find first existing firmware
             for firmware_path in firmware_paths:
                 if firmware_path.exists():
+                    # Use original ESPHome filename structure: node_name.factory.bin or node_name.bin
+                    if "factory" in firmware_path.name:
+                        filename = f"{node_name}.factory.bin"
+                    else:
+                        filename = f"{node_name}.bin"
+
                     self.set_header('Content-Type', 'application/octet-stream')
-                    self.set_header('Content-Disposition', f'attachment; filename="{node_name}_firmware.bin"')
+                    self.set_header('Content-Disposition', f'attachment; filename="{filename}"')
                     with firmware_path.open('rb') as f:
                         self.write(f.read())
                     return

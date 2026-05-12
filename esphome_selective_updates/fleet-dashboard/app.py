@@ -1109,23 +1109,26 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
             return self.write({"error": "Instance not found"})
 
         try:
-            # Get node_name from database (ESPHome uses node_name for build directories)
-            conn = get_db_connection()
-            c = conn.cursor(cursor_factory=RealDictCursor)
-            c.execute("""
-                SELECT node_name FROM fleet_manager.devices
-                WHERE instance = %s AND name LIKE %s
-                LIMIT 1
-            """, (instance, f"{device_name}%"))
-            device = c.fetchone()
-            conn.close()
-
-            if not device:
-                self.set_status(404)
-                return self.write({"error": f"Device {device_name} not found in {instance}"})
-
-            node_name = device["node_name"]
+            # Parse YAML to get node_name (ESPHome uses node_name for build directories)
             config_dir = Path(instance_config["config_dir"])
+            yaml_file = config_dir / f"{device_name}.yaml"
+
+            if not yaml_file.exists():
+                self.set_status(404)
+                return self.write({"error": f"Config file {device_name}.yaml not found"})
+
+            with yaml_file.open() as f:
+                config = yaml.safe_load(f)
+
+            substitutions = config.get("substitutions", {})
+            esphome_config = config.get("esphome", {})
+            node_name = esphome_config.get("name") or device_name
+
+            # Resolve substitution if name uses ${var}
+            if isinstance(node_name, str) and node_name.startswith("${") and node_name.endswith("}"):
+                sub_var = node_name[2:-1]
+                node_name = substitutions.get(sub_var, device_name)
+
             build_dir = config_dir / ".esphome" / "build" / node_name
 
             if not build_dir.exists():

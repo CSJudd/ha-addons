@@ -1769,9 +1769,11 @@ class UpdateBuilderHandler(tornado.web.RequestHandler):
                 for binding in host_bindings:
                     host_port = binding.get("HostPort")
                     if host_port:
-                        cmd.extend(["-p", f"{host_port}:{container_port.split('/')[0]}"])
+                        # ESPHome dashboard always listens on 6052 internally
+                        cmd.extend(["-p", f"{host_port}:6052"])
 
             cmd.append(image)
+            cmd.extend(["dashboard", "/config"])
 
             print(f"Creating new container: {' '.join(cmd)}")
             create_result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)

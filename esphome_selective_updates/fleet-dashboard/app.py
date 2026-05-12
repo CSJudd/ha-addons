@@ -1137,13 +1137,13 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
                     "error": "Device has not been compiled yet. Click 'Compile' first, then download firmware."
                 })
 
-            # Common firmware locations
+            # Common firmware locations - prioritize .factory.bin for UART flashing
             firmware_paths = [
-                build_dir / ".pioenvs" / node_name / "firmware.bin",
                 build_dir / ".pioenvs" / node_name / "firmware.factory.bin",
                 build_dir / ".pioenvs" / node_name / "firmware-factory.bin",
-                build_dir / "firmware.bin",
                 build_dir / "firmware.factory.bin",
+                build_dir / ".pioenvs" / node_name / "firmware.bin",
+                build_dir / "firmware.bin",
             ]
 
             # Find first existing firmware

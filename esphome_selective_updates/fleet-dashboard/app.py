@@ -1114,9 +1114,9 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
             c = conn.cursor(cursor_factory=RealDictCursor)
             c.execute("""
                 SELECT node_name FROM fleet_manager.devices
-                WHERE instance = %s AND name LIKE %s || '%'
+                WHERE instance = %s AND name LIKE %s
                 LIMIT 1
-            """, (instance, device_name))
+            """, (instance, f"{device_name}%"))
             device = c.fetchone()
             conn.close()
 

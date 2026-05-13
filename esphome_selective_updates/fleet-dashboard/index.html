@@ -1,0 +1,2047 @@
+<!DOCTYPE html>
+<html lang="en" x-data="fleetManager()" x-init="init()">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>ESPHome Fleet Manager</title>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Header -->
+    <div class="bg-blue-600 text-white shadow-lg">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-2xl font-bold">🚀 ESPHome Fleet Manager</h1>
+                    <p class="text-blue-100 text-sm">Multi-Instance Fleet Management</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <!-- Instance Selector -->
+                    <div class="bg-blue-500 px-4 py-2 rounded-lg">
+                        <label class="text-xs text-blue-100 block mb-1">Instance:</label>
+                        <select x-model="currentInstance"
+                                @change="switchInstance()"
+                                class="bg-white text-gray-800 px-3 py-1 rounded border-0 font-medium">
+                            <template x-for="inst in instances" :key="inst.slug">
+                                <option :value="inst.slug"
+                                        x-text="inst.name"
+                                        :selected="inst.slug === currentInstance"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <button @click="refreshDevices()"
+                            class="px-4 py-2 bg-blue-500 hover:bg-blue-400 rounded-lg transition">
+                        🔄 Refresh
+                    </button>
+                    <div class="text-sm">
+                        <span x-text="filteredDevices.length"></span> devices
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="container mx-auto px-4 py-6">
+        <!-- Tab Navigation -->
+        <div class="mb-6 border-b border-gray-200">
+            <nav class="flex space-x-8">
+                <button @click="activeTab = 'devices'"
+                        :class="activeTab === 'devices' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm">
+                    📱 Devices
+                </button>
+                <button @click="activeTab = 'common'; loadCommonFiles()"
+                        :class="activeTab === 'common' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm">
+                    📁 Common Files
+                </button>
+                <button @click="activeTab = 'history'; loadOperationHistory()"
+                        :class="activeTab === 'history' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm">
+                    📊 History
+                </button>
+                <button @click="activeTab = 'settings'; loadSettings()"
+                        :class="activeTab === 'settings' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm">
+                    ⚙️ Settings
+                </button>
+            </nav>
+        </div>
+
+        <!-- Devices Tab -->
+        <div x-show="activeTab === 'devices'">
+        <!-- Stats Bar -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div @click="selectStatFilter('all')"
+                 :class="selectedStatFilter === 'all' ? 'ring-4 ring-blue-500' : ''"
+                 class="bg-white rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
+                <div class="text-gray-500 text-sm">Total Devices</div>
+                <div class="text-3xl font-bold text-gray-800" x-text="stats.total"></div>
+            </div>
+            <div @click="selectStatFilter('online')"
+                 :class="selectedStatFilter === 'online' ? 'ring-4 ring-green-500' : ''"
+                 class="bg-green-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
+                <div class="text-green-600 text-sm">Online</div>
+                <div class="text-3xl font-bold text-green-700" x-text="stats.online"></div>
+            </div>
+            <div @click="selectStatFilter('offline')"
+                 :class="selectedStatFilter === 'offline' ? 'ring-4 ring-red-500' : ''"
+                 class="bg-red-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
+                <div class="text-red-600 text-sm">Offline</div>
+                <div class="text-3xl font-bold text-red-700" x-text="stats.offline"></div>
+            </div>
+            <div @click="selectStatFilter('updates')"
+                 :class="selectedStatFilter === 'updates' ? 'ring-4 ring-yellow-500' : ''"
+                 class="bg-yellow-50 rounded-lg shadow p-4 cursor-pointer hover:shadow-lg transition-all">
+                <div class="text-yellow-600 text-sm">Updates Available</div>
+                <div class="text-3xl font-bold text-yellow-700" x-text="stats.updates"></div>
+            </div>
+        </div>
+
+        <!-- Filters & Search -->
+        <div class="bg-white rounded-lg shadow p-4 mb-6">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <!-- Search -->
+                <div>
+                    <input type="text"
+                           x-model="search"
+                           @input.debounce.300ms="filterDevices()"
+                           placeholder="🔍 Search devices..."
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                </div>
+
+                <!-- Instance Filter -->
+                <div>
+                    <select x-model="filters.instance"
+                            @change="filterDevices()"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="">All Instances</option>
+                        <option value="production">Production</option>
+                        <option value="lab">Lab</option>
+                    </select>
+                </div>
+
+                <!-- Type Filter -->
+                <div>
+                    <select x-model="filters.type"
+                            @change="filterDevices()"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="">All Types</option>
+                        <template x-for="type in deviceTypes" :key="type">
+                            <option :value="type" x-text="type"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <!-- Group By -->
+                <div>
+                    <select x-model="groupBy"
+                            @change="updateView()"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="none">No Grouping</option>
+                        <option value="type">Group by Type</option>
+                        <option value="area">Group by Area</option>
+                        <option value="instance">Group by Instance</option>
+                        <option value="status">Group by Status</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Bulk Actions -->
+            <div class="mt-4 flex items-center justify-between" x-show="selectedDevices.length > 0">
+                <div class="text-sm text-gray-600">
+                    <span x-text="selectedDevices.length"></span> devices selected
+                </div>
+                <div class="flex space-x-2">
+                    <button @click="bulkOperation('compile')"
+                            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
+                        ⚙️ Compile Only
+                    </button>
+                    <button @click="bulkOperation('upload')"
+                            class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition">
+                        📡 OTA (Compile/Flash)
+                    </button>
+                    <button @click="bulkDownload()"
+                            class="px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition">
+                        💾 Download (Compile/Save)
+                    </button>
+                    <button @click="clearSelection()"
+                            class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                        Clear
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Device List -->
+        <div class="bg-white rounded-lg shadow">
+            <!-- Loading State -->
+            <div x-show="loading" class="p-8 text-center text-gray-500">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                Loading devices...
+            </div>
+
+            <!-- Devices Table -->
+            <div x-show="!loading" x-cloak>
+                <template x-if="groupBy === 'none'">
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-50 border-b">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                        <input type="checkbox"
+                                               @change="toggleAll($event.target.checked)"
+                                               class="rounded">
+                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Area</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Version</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <template x-for="device in filteredDevices" :key="device.name">
+                                    <tr class="hover:bg-gray-50 transition">
+                                        <td class="px-4 py-3">
+                                            <input type="checkbox"
+                                                   :value="device.name"
+                                                   x-model="selectedDevices"
+                                                   class="rounded">
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <div class="font-medium text-blue-600 hover:text-blue-800 cursor-pointer"
+                                                 @click="openDeviceModal(device)"
+                                                 x-text="device.friendly_name || device.name"></div>
+                                            <div class="text-xs text-gray-500" x-text="device.name + ' • ' + (device.ip_address || 'mDNS')"></div>
+                                        </td>
+                                        <td class="px-4 py-3 text-sm text-gray-700" x-text="device.device_type"></td>
+                                        <td class="px-4 py-3 text-sm text-gray-700" x-text="device.area || 'Unknown'"></td>
+                                        <td class="px-4 py-3">
+                                            <span class="px-2 py-1 text-xs rounded-full"
+                                                  :class="device.instance === 'production' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
+                                                  x-text="device.instance"></span>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <span class="px-2 py-1 text-xs rounded-full"
+                                                  :class="{
+                                                      'bg-green-100 text-green-700': device.status === 'online',
+                                                      'bg-red-100 text-red-700': device.status === 'offline',
+                                                      'bg-gray-100 text-gray-700': device.status === 'unknown'
+                                                  }"
+                                                  x-text="device.status"></span>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <div class="text-sm text-gray-900" x-text="device.current_version || device.deployed_version || 'unknown'"></div>
+                                            <div x-show="device.pinned_version && device.pinned_version !== '*'" class="text-xs text-blue-600">
+                                                📌 Pinned: <span x-text="device.pinned_version"></span>
+                                            </div>
+                                            <div x-show="device.update_available" class="text-xs text-orange-600">
+                                                ⚠ Update to <span x-text="device.deployed_version"></span>
+                                            </div>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <button @click="openDeviceModal(device)"
+                                                    class="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                                                Manage
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </template>
+
+                <!-- Grouped View -->
+                <template x-if="groupBy !== 'none'">
+                    <div class="p-4">
+                        <template x-for="(group, key) in groupedDevices" :key="key">
+                            <div class="mb-6">
+                                <div class="flex items-center justify-between mb-2 cursor-pointer"
+                                     @click="toggleGroup(key)">
+                                    <h3 class="text-lg font-semibold text-gray-800">
+                                        <span x-text="key"></span>
+                                        <span class="text-sm text-gray-500 ml-2">(<span x-text="group.length"></span>)</span>
+                                    </h3>
+                                    <span x-text="expandedGroups.includes(key) ? '▼' : '▶'" class="text-gray-400"></span>
+                                </div>
+                                <div x-show="expandedGroups.includes(key)" class="overflow-x-auto">
+                                    <table class="w-full">
+                                        <thead class="bg-gray-50 border-b">
+                                            <tr>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                                                    <input type="checkbox" class="rounded">
+                                                </th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Area</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Version</th>
+                                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-gray-200">
+                                            <template x-for="device in group" :key="device.name">
+                                                <tr class="hover:bg-gray-50 transition">
+                                                    <td class="px-4 py-2">
+                                                        <input type="checkbox"
+                                                               :value="device.name"
+                                                               x-model="selectedDevices"
+                                                               class="rounded">
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <div class="font-medium text-blue-600 hover:text-blue-800 cursor-pointer text-sm"
+                                                             @click="openDeviceModal(device)"
+                                                             x-text="device.friendly_name || device.name"></div>
+                                                        <div class="text-xs text-gray-500" x-text="device.name"></div>
+                                                    </td>
+                                                    <td class="px-4 py-2 text-sm text-gray-700" x-text="device.device_type"></td>
+                                                    <td class="px-4 py-2 text-sm text-gray-700" x-text="device.area || 'Unknown'"></td>
+                                                    <td class="px-4 py-2">
+                                                        <span class="px-2 py-1 text-xs rounded-full"
+                                                              :class="device.instance === 'production' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'"
+                                                              x-text="device.instance"></span>
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <span class="px-2 py-1 text-xs rounded-full"
+                                                              :class="{
+                                                                  'bg-green-100 text-green-700': device.status === 'online',
+                                                                  'bg-red-100 text-red-700': device.status === 'offline',
+                                                                  'bg-gray-100 text-gray-700': device.status === 'unknown'
+                                                              }"
+                                                              x-text="device.status"></span>
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <div class="text-sm text-gray-900" x-text="device.current_version || device.deployed_version || 'unknown'"></div>
+                                                        <div x-show="device.pinned_version && device.pinned_version !== '*'" class="text-xs text-blue-600">
+                                                            📌 Pinned: <span x-text="device.pinned_version"></span>
+                                                        </div>
+                                                        <div x-show="device.update_available" class="text-xs text-orange-600">
+                                                            ⚠ Update to <span x-text="device.deployed_version"></span>
+                                                        </div>
+                                                    </td>
+                                                    <td class="px-4 py-2">
+                                                        <button @click="openDeviceModal(device)"
+                                                                class="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                                                            Manage
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <!-- Empty State -->
+                <div x-show="filteredDevices.length === 0" class="p-8 text-center text-gray-500">
+                    No devices found matching your filters.
+                </div>
+            </div>
+        </div>
+        </div>
+        <!-- End Devices Tab -->
+
+        <!-- Common Files Tab -->
+        <div x-show="activeTab === 'common'">
+            <div class="bg-white rounded-lg shadow">
+                <!-- Common Files Header -->
+                <div class="px-6 py-4 border-b flex items-center justify-between">
+                    <h3 class="text-lg font-semibold text-gray-900">Common Configuration Files</h3>
+                    <button @click="createCommonFile()"
+                            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
+                        ➕ New File
+                    </button>
+                </div>
+
+                <!-- Loading State -->
+                <div x-show="commonFiles.loading" class="p-8 text-center text-gray-500">
+                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                    Loading common files...
+                </div>
+
+                <!-- Files List -->
+                <div x-show="!commonFiles.loading" class="divide-y divide-gray-200">
+                    <template x-for="file in commonFiles.list" :key="file.name">
+                        <div class="px-6 py-4 hover:bg-gray-50 flex items-center justify-between">
+                            <div class="flex-1 cursor-pointer" @click="openCommonFile(file)">
+                                <div class="font-medium text-gray-900" x-text="file.name"></div>
+                                <div class="text-xs text-gray-500">
+                                    <span x-text="(file.size / 1024).toFixed(1)"></span> KB
+                                </div>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button @click="openCommonFile(file)"
+                                        class="px-3 py-1 text-blue-600 hover:text-blue-800 text-sm">
+                                    Edit
+                                </button>
+                                <button @click="deleteCommonFile(file)"
+                                        class="px-3 py-1 text-red-600 hover:text-red-800 text-sm">
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Empty State -->
+                    <div x-show="commonFiles.list.length === 0" class="p-8 text-center text-gray-500">
+                        No common files found. Click "New File" to create one.
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- End Common Files Tab -->
+
+        <!-- History Tab -->
+        <div x-show="activeTab === 'history'">
+            <div class="bg-white rounded-lg shadow">
+                <div class="px-6 py-4 border-b">
+                    <h3 class="text-lg font-semibold text-gray-900">Operation History</h3>
+                </div>
+
+                <!-- Loading State -->
+                <div x-show="history.loading" class="p-8 text-center text-gray-500">
+                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                    Loading operation history...
+                </div>
+
+                <!-- Operations Table -->
+                <div x-show="!history.loading" class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 border-b">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Operation</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Devices</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Success/Fail</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Started</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            <template x-for="op in history.operations" :key="op.id">
+                                <tr class="hover:bg-gray-50">
+                                    <td class="px-6 py-4 text-sm text-gray-900" x-text="op.id"></td>
+                                    <td class="px-6 py-4 text-sm text-gray-900" x-text="op.operation_type"></td>
+                                    <td class="px-6 py-4 text-sm text-gray-900" x-text="op.device_count"></td>
+                                    <td class="px-6 py-4 text-sm">
+                                        <span class="text-green-600" x-text="op.success_count"></span> /
+                                        <span class="text-red-600" x-text="op.failure_count"></span>
+                                    </td>
+                                    <td class="px-6 py-4 text-sm text-gray-500" x-text="new Date(op.started_at).toLocaleString()"></td>
+                                    <td class="px-6 py-4">
+                                        <span class="px-2 py-1 text-xs rounded-full"
+                                              :class="{
+                                                  'bg-green-100 text-green-700': op.status === 'completed',
+                                                  'bg-blue-100 text-blue-700': op.status === 'running',
+                                                  'bg-red-100 text-red-700': op.status === 'failed'
+                                              }"
+                                              x-text="op.status"></span>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <button @click="viewOperationDetails(op.id)"
+                                                class="text-blue-600 hover:text-blue-800 text-sm">
+                                            View Details
+                                        </button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+
+                    <!-- Empty State -->
+                    <div x-show="history.operations.length === 0" class="p-8 text-center text-gray-500">
+                        No operation history found.
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- End History Tab -->
+
+        <!-- Settings Tab -->
+        <div x-show="activeTab === 'settings'">
+            <div class="space-y-6">
+                <!-- Substitution Validation -->
+                <div class="bg-blue-50 border border-blue-200 rounded-lg">
+                    <div class="px-6 py-4">
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <span class="text-3xl">ℹ️</span>
+                            </div>
+                            <div class="ml-4 flex-1">
+                                <h3 class="text-lg font-semibold text-blue-900 mb-2">Required Substitutions</h3>
+                                <p class="text-sm text-blue-800 mb-3">
+                                    For the fleet manager to work properly, all device YAMLs should include these substitutions:
+                                </p>
+                                <div class="mb-3">
+                                    <p class="text-xs font-semibold text-blue-900 mb-1">Required:</p>
+                                    <ul class="text-sm text-blue-800 space-y-1 list-disc list-inside ml-2">
+                                        <li><code class="bg-blue-100 px-2 py-0.5 rounded">device_type</code> - Device hardware type (e.g., "Sonoff S31", "Athom Switch")</li>
+                                        <li><code class="bg-blue-100 px-2 py-0.5 rounded">esphome_version</code> - ESPHome version pinning ("*" for latest, or "2026.4.3" for specific)</li>
+                                        <li><code class="bg-blue-100 px-2 py-0.5 rounded">area</code> - Logical location/room name for grouping</li>
+                                    </ul>
+                                </div>
+                                <div class="mb-4">
+                                    <p class="text-xs font-semibold text-blue-900 mb-1">Recommended (Optional):</p>
+                                    <ul class="text-sm text-blue-800 space-y-1 list-disc list-inside ml-2">
+                                        <li><code class="bg-blue-100 px-2 py-0.5 rounded">physical_location</code> - Exact physical install location (e.g., "Behind fridge, bottom left outlet") for maintenance</li>
+                                    </ul>
+                                </div>
+                                <div class="flex items-center space-x-4">
+                                    <button @click="checkSubstitutions()"
+                                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                                        🔍 Check All Devices
+                                    </button>
+                                    <span x-show="validationResults.loading" class="text-sm text-blue-700">
+                                        Scanning devices...
+                                    </span>
+                                    <span x-show="validationResults.checked" class="text-sm text-blue-700">
+                                        ✓ <span x-text="validationResults.compliant"></span> / <span x-text="validationResults.total"></span> devices compliant
+                                        <span x-show="validationResults.missingRecommended > 0" class="text-yellow-600">
+                                            • <span x-text="validationResults.missingRecommended"></span> missing recommended
+                                        </span>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Validation Results -->
+                <div x-show="validationResults.checked && validationResults.issues.length > 0"
+                     class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b bg-yellow-50">
+                        <h3 class="text-lg font-semibold text-yellow-900">
+                            ⚠️ <span x-text="validationResults.issues.length"></span> Device(s) Need Attention
+                        </h3>
+                    </div>
+                    <div class="px-6 py-4 max-h-96 overflow-y-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 border-b sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Device</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Missing</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Current Substitutions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <template x-for="issue in validationResults.issues" :key="issue.device + issue.instance">
+                                    <tr class="hover:bg-gray-50">
+                                        <td class="px-4 py-3 font-mono text-xs" x-text="issue.device"></td>
+                                        <td class="px-4 py-3 text-xs" x-text="issue.instance"></td>
+                                        <td class="px-4 py-3">
+                                            <template x-if="issue.missing">
+                                                <div class="flex flex-wrap gap-1">
+                                                    <template x-for="sub in issue.missing" :key="sub">
+                                                        <span class="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded" x-text="sub"></span>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                            <template x-if="issue.error">
+                                                <span class="text-red-600 text-xs" x-text="'Error: ' + issue.error"></span>
+                                            </template>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <template x-if="issue.has && issue.has.length > 0">
+                                                <div class="flex flex-wrap gap-1">
+                                                    <template x-for="sub in issue.has" :key="sub">
+                                                        <span class="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded" x-text="sub"></span>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                            <template x-if="!issue.has || issue.has.length === 0">
+                                                <span class="text-gray-400 text-xs">None</span>
+                                            </template>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="px-6 py-4 border-t bg-gray-50 text-sm text-gray-600">
+                        💡 <strong>Tip:</strong> You can batch-update device YAMLs in another session to add missing substitutions based on device naming patterns.
+                    </div>
+                </div>
+
+                <!-- Recommended Substitutions Results -->
+                <div x-show="validationResults.checked && validationResults.recommendedIssues.length > 0"
+                     class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b bg-yellow-50">
+                        <h3 class="text-lg font-semibold text-yellow-800">
+                            💡 <span x-text="validationResults.recommendedIssues.length"></span> Device(s) Missing Recommended Substitutions
+                        </h3>
+                        <p class="text-sm text-yellow-700 mt-1">These are optional but helpful for maintenance and troubleshooting.</p>
+                    </div>
+                    <div class="px-6 py-4 max-h-64 overflow-y-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 border-b sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Device</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Missing Recommended</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                <template x-for="issue in validationResults.recommendedIssues" :key="issue.device + issue.instance">
+                                    <tr class="hover:bg-gray-50">
+                                        <td class="px-4 py-3 font-mono text-xs" x-text="issue.device"></td>
+                                        <td class="px-4 py-3 text-xs" x-text="issue.instance"></td>
+                                        <td class="px-4 py-3">
+                                            <div class="flex flex-wrap gap-1">
+                                                <template x-for="sub in issue.missing" :key="sub">
+                                                    <span class="px-2 py-0.5 bg-yellow-100 text-yellow-700 text-xs rounded" x-text="sub"></span>
+                                                </template>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Home Assistant API Settings -->
+                <div class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b">
+                        <h3 class="text-lg font-semibold text-gray-900">Home Assistant API</h3>
+                    </div>
+                    <div class="px-6 py-4 space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">URL</label>
+                            <input type="text"
+                                   x-model="settings.homeassistant.url"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                   placeholder="http://homeassistant.local:8123">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Long-Lived Access Token</label>
+                            <input type="password"
+                                   x-model="settings.homeassistant.token"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                   placeholder="eyJhbGc...">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Settings -->
+                <div class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b">
+                        <h3 class="text-lg font-semibold text-gray-900">System Settings</h3>
+                    </div>
+                    <div class="px-6 py-4 space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Parallel Ping Workers</label>
+                            <input type="number"
+                                   x-model.number="settings.settings.ping_workers"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                   min="1" max="500">
+                            <p class="text-xs text-gray-500 mt-1">Number of concurrent device status checks (1-500)</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Compile Timeout (seconds)</label>
+                            <input type="number"
+                                   x-model.number="settings.settings.compile_timeout"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                   min="60" max="1800">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Upload Timeout (seconds)</label>
+                            <input type="number"
+                                   x-model.number="settings.settings.upload_timeout"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                                   min="60" max="1800">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Maintenance -->
+                <div class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b">
+                        <h3 class="text-lg font-semibold text-gray-900">Maintenance</h3>
+                    </div>
+                    <div class="px-6 py-4 space-y-4">
+                        <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+                            <div class="flex">
+                                <div class="flex-shrink-0">
+                                    <span class="text-2xl">⚠️</span>
+                                </div>
+                                <div class="ml-3 flex-1">
+                                    <h4 class="text-sm font-medium text-yellow-800">Clean PlatformIO Cache</h4>
+                                    <p class="mt-2 text-sm text-yellow-700">
+                                        If compiles fail with toolchain errors like "Dynconfig not exist", clean the PlatformIO cache.
+                                        Next compile will reinstall toolchain (takes longer).
+                                    </p>
+                                    <div class="mt-4 flex space-x-3">
+                                        <template x-for="inst in settings.instances.filter(i => i.enabled)" :key="inst.slug">
+                                            <button @click="cleanPlatformIO(inst.slug)"
+                                                    class="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition text-sm">
+                                                🧹 Clean <span x-text="inst.name"></span>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Instance Management -->
+                <div class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b flex items-center justify-between">
+                        <h3 class="text-lg font-semibold text-gray-900">ESPHome Instances</h3>
+                        <button @click="addInstance()"
+                                class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm">
+                            ➕ Add Instance
+                        </button>
+                    </div>
+                    <div class="px-6 py-4 space-y-4">
+                        <template x-for="(inst, index) in settings.instances" :key="index">
+                            <div class="border border-gray-200 rounded-lg p-4 space-y-3">
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                                        <input type="text"
+                                               x-model="inst.name"
+                                               class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Slug</label>
+                                        <input type="text"
+                                               x-model="inst.slug"
+                                               class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Config Directory</label>
+                                    <input type="text"
+                                           x-model="inst.config_dir"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Docker Container</label>
+                                    <input type="text"
+                                           x-model="inst.container"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <label class="flex items-center">
+                                        <input type="checkbox"
+                                               x-model="inst.enabled"
+                                               class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                        <span class="ml-2 text-sm text-gray-700">Enabled</span>
+                                    </label>
+                                    <button @click="settings.instances.splice(index, 1)"
+                                            class="text-red-600 hover:text-red-800 text-sm">
+                                        🗑️ Remove
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="flex justify-end">
+                    <button @click="saveSettings()"
+                            class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+                        💾 Save All Settings
+                    </button>
+                </div>
+            </div>
+        </div>
+        <!-- End Settings Tab -->
+    </div>
+
+    <!-- Common File Editor Modal -->
+    <div x-show="commonFiles.modalOpen"
+         x-cloak
+         class="fixed inset-0 z-50 overflow-y-auto"
+         @keydown.escape.window="closeCommonFileModal()">
+        <div class="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
+             @click="closeCommonFileModal()"></div>
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="relative bg-white rounded-lg shadow-xl max-w-4xl w-full" @click.stop>
+                <div class="flex items-center justify-between px-6 py-4 border-b">
+                    <h2 class="text-xl font-bold text-gray-900" x-text="commonFiles.currentFile"></h2>
+                    <button @click="closeCommonFileModal()" class="text-gray-400 hover:text-gray-600">
+                        <span class="text-2xl">&times;</span>
+                    </button>
+                </div>
+                <div class="px-6 py-4">
+                    <textarea x-model="commonFiles.content"
+                              class="w-full h-96 p-4 bg-gray-900 text-green-400 rounded text-xs font-mono"
+                              spellcheck="false"></textarea>
+                </div>
+                <div class="px-6 py-4 border-t flex justify-end space-x-2">
+                    <button @click="saveCommonFile()"
+                            class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">
+                        💾 Save
+                    </button>
+                    <button @click="closeCommonFileModal()"
+                            class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Device Detail Modal -->
+    <div x-show="deviceModal.show"
+         x-cloak
+         class="fixed inset-0 z-50 overflow-y-auto"
+         @keydown.escape.window="closeDeviceModal()">
+        <!-- Backdrop -->
+        <div class="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
+             @click="closeDeviceModal()"></div>
+
+        <!-- Modal Content -->
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="relative bg-white rounded-lg shadow-xl max-w-4xl w-full"
+                 @click.stop>
+                <!-- Header -->
+                <div class="flex items-center justify-between px-6 py-4 border-b">
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-900" x-text="deviceModal.device?.friendly_name || deviceModal.device?.name"></h2>
+                        <p class="text-sm text-gray-500" x-text="deviceModal.device?.name + ' • ' + (deviceModal.device?.ip_address || 'mDNS')"></p>
+                    </div>
+                    <button @click="closeDeviceModal()"
+                            class="text-gray-400 hover:text-gray-600">
+                        <span class="text-2xl">&times;</span>
+                    </button>
+                </div>
+
+                <!-- Device Info -->
+                <div class="px-6 py-4 border-b bg-gray-50">
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div>
+                            <div class="text-xs text-gray-500">Status</div>
+                            <span class="px-2 py-1 text-xs rounded-full inline-block"
+                                  :class="{
+                                      'bg-green-100 text-green-700': deviceModal.device?.status === 'online',
+                                      'bg-red-100 text-red-700': deviceModal.device?.status === 'offline',
+                                      'bg-gray-100 text-gray-700': deviceModal.device?.status === 'unknown'
+                                  }"
+                                  x-text="deviceModal.device?.status"></span>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500">Running Version</div>
+                            <div class="font-medium" x-text="deviceModal.device?.current_version || deviceModal.device?.deployed_version || 'unknown'"></div>
+                            <div x-show="deviceModal.device?.update_available" class="text-xs text-orange-600 mt-1">
+                                ⚠ Update available: <span x-text="deviceModal.device?.deployed_version"></span>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500">Type</div>
+                            <div class="font-medium" x-text="deviceModal.device?.device_type"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-500">Area</div>
+                            <div class="font-medium" x-text="deviceModal.device?.area || 'Unknown'"></div>
+                        </div>
+                    </div>
+                    <!-- Physical Location (if set) -->
+                    <div x-show="deviceModal.device?.physical_location" class="mt-3 pt-3 border-t border-gray-200">
+                        <div class="text-xs text-gray-500 mb-1">📍 Physical Location</div>
+                        <div class="text-sm text-gray-700 italic" x-text="deviceModal.device?.physical_location"></div>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="px-6 py-4">
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <button @click="deviceAction('validate')"
+                                class="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center justify-center">
+                            <span class="mr-2">✓</span> Validate
+                        </button>
+                        <button @click="deviceAction('compile')"
+                                class="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center justify-center">
+                            <span class="mr-2">⚙️</span> Compile Only
+                        </button>
+                        <button @click="deviceAction('upload')"
+                                class="px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center justify-center">
+                            <span class="mr-2">📡</span> OTA (Compile/Flash)
+                        </button>
+                        <button @click="compileAndDownload()"
+                                class="px-4 py-3 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition flex items-center justify-center">
+                            <span class="mr-2">💾</span> Download (Compile/Save)
+                        </button>
+                        <button @click="deviceAction('logs')"
+                                class="px-4 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center justify-center">
+                            <span class="mr-2">📋</span> View Logs
+                        </button>
+                        <button @click="deviceAction('clean')"
+                                class="px-4 py-3 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition flex items-center justify-center">
+                            <span class="mr-2">🗑️</span> Clean Build
+                        </button>
+                        <button @click="deviceAction('config')"
+                                class="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition flex items-center justify-center">
+                            <span class="mr-2">📄</span> View Config
+                        </button>
+                        <button @click="toggleEditMode()"
+                                x-show="deviceModal.output && !deviceModal.editMode"
+                                class="px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center justify-center">
+                            <span class="mr-2">✏️</span> Edit Config
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Action Output / Edit Mode -->
+                <div x-show="deviceModal.output"
+                     class="px-6 py-4 border-t">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="font-semibold text-gray-700">
+                            <span x-show="!deviceModal.editMode">Output:</span>
+                            <span x-show="deviceModal.editMode" class="text-orange-600">Editing Configuration:</span>
+                        </div>
+                        <div x-show="deviceModal.editMode" class="flex space-x-2">
+                            <button @click="saveConfig()"
+                                    class="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">
+                                💾 Save
+                            </button>
+                            <button @click="cancelEdit()"
+                                    class="px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-700">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                    <pre x-show="!deviceModal.editMode"
+                         class="bg-gray-900 text-green-400 p-4 rounded text-xs overflow-x-auto max-h-96"
+                         x-text="deviceModal.output"></pre>
+                    <textarea x-show="deviceModal.editMode"
+                              x-model="deviceModal.output"
+                              class="w-full h-96 p-4 bg-gray-900 text-green-400 rounded text-xs font-mono"
+                              spellcheck="false"></textarea>
+                </div>
+
+                <!-- Loading -->
+                <div x-show="deviceModal.loading"
+                     class="px-6 py-4 border-t text-center">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                    <div class="mt-2 text-gray-600">Processing...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alpine.js Data -->
+    <!-- Bulk Operation Progress Modal -->
+    <div x-show="bulkProgress.show"
+         x-cloak
+         class="fixed inset-0 z-50 overflow-y-auto"
+         @keydown.escape.window="closeBulkProgress()">
+        <div class="fixed inset-0 bg-black bg-opacity-50 transition-opacity"></div>
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="relative bg-white rounded-lg shadow-xl max-w-4xl w-full" @click.stop>
+                <div class="flex items-center justify-between px-6 py-4 border-b">
+                    <h2 class="text-xl font-bold text-gray-900">
+                        Bulk Operation: <span x-text="bulkProgress.operation"></span>
+                    </h2>
+                    <button @click="closeBulkProgress()" class="text-gray-400 hover:text-gray-600">
+                        <span class="text-2xl">&times;</span>
+                    </button>
+                </div>
+
+                <!-- Progress Overview -->
+                <div class="px-6 py-4 bg-gray-50 border-b">
+                    <div class="grid grid-cols-3 gap-4 text-center">
+                        <div>
+                            <div class="text-2xl font-bold text-blue-600" x-text="bulkProgress.completed"></div>
+                            <div class="text-xs text-gray-500">Completed</div>
+                        </div>
+                        <div>
+                            <div class="text-2xl font-bold text-green-600" x-text="bulkProgress.success"></div>
+                            <div class="text-xs text-gray-500">Success</div>
+                        </div>
+                        <div>
+                            <div class="text-2xl font-bold text-red-600" x-text="bulkProgress.failed"></div>
+                            <div class="text-xs text-gray-500">Failed</div>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div class="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                 :style="`width: ${(bulkProgress.completed / bulkProgress.total * 100)}%`"></div>
+                        </div>
+                        <div class="text-xs text-gray-500 mt-1 text-center">
+                            <span x-text="bulkProgress.completed"></span> / <span x-text="bulkProgress.total"></span> devices
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Device Results -->
+                <div class="px-6 py-4 max-h-96 overflow-y-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 border-b sticky top-0">
+                            <tr>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Device</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Error</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase" x-show="bulkProgress.operation === 'compile'">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            <template x-for="result in bulkProgress.results" :key="result.device_name">
+                                <tr>
+                                    <td class="px-4 py-3 font-mono text-xs" x-text="result.device_name"></td>
+                                    <td class="px-4 py-3 text-xs" x-text="result.instance"></td>
+                                    <td class="px-4 py-3">
+                                        <span class="px-2 py-1 text-xs rounded-full"
+                                              :class="{
+                                                  'bg-green-100 text-green-700': result.status === 'success',
+                                                  'bg-red-100 text-red-700': result.status === 'failed'
+                                              }"
+                                              x-text="result.status"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-xs text-red-600" x-text="result.error_message || '-'"></td>
+                                    <td class="px-4 py-3" x-show="bulkProgress.operation === 'compile'">
+                                        <a x-show="result.status === 'success'"
+                                           :href="`/api/device/${result.instance}/${result.device_name}/firmware`"
+                                           target="_blank"
+                                           class="text-cyan-600 hover:text-cyan-800 text-xs">
+                                            💾 Download
+                                        </a>
+                                    </td>
+                                </tr>
+                            </template>
+                            <template x-if="bulkProgress.inProgress > 0">
+                                <tr>
+                                    <td colspan="4" class="px-4 py-3 text-center text-gray-500">
+                                        <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                                        <span x-text="bulkProgress.inProgress"></span> devices in progress...
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="px-6 py-4 border-t flex justify-between">
+                    <div class="text-sm text-gray-600">
+                        <span x-show="bulkProgress.status === 'running'">⏳ Operation in progress...</span>
+                        <span x-show="bulkProgress.status === 'completed'" class="text-green-600">✅ Operation completed!</span>
+                    </div>
+                    <button @click="closeBulkProgress()"
+                            class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function fleetManager() {
+            return {
+                devices: [],
+                filteredDevices: [],
+                deviceTypes: [],
+                instances: [],
+                currentInstance: 'production',
+                selectedDevices: [],
+                expandedGroups: [],
+                loading: true,
+                search: '',
+                filters: {
+                    instance: 'production',
+                    type: '',
+                    status: ''
+                },
+                groupBy: 'none',
+                selectedStatFilter: 'all',
+                stats: {
+                    total: 0,
+                    online: 0,
+                    offline: 0,
+                    updates: 0
+                },
+                deviceModal: {
+                    show: false,
+                    device: null,
+                    loading: false,
+                    output: '',
+                    editMode: false,
+                    originalOutput: ''
+                },
+                activeTab: 'devices',
+                commonFiles: {
+                    list: [],
+                    loading: false,
+                    modalOpen: false,
+                    currentFile: '',
+                    content: ''
+                },
+                history: {
+                    operations: [],
+                    loading: false
+                },
+                settings: {
+                    homeassistant: {
+                        url: '',
+                        token: ''
+                    },
+                    settings: {
+                        ping_workers: 100,
+                        compile_timeout: 300,
+                        upload_timeout: 300
+                    },
+                    instances: []
+                },
+                validationResults: {
+                    checked: false,
+                    loading: false,
+                    total: 0,
+                    compliant: 0,
+                    missingRecommended: 0,
+                    issues: [],
+                    recommendedIssues: []
+                },
+                bulkProgress: {
+                    show: false,
+                    operationId: null,
+                    operation: '',
+                    status: 'running',
+                    total: 0,
+                    completed: 0,
+                    success: 0,
+                    failed: 0,
+                    inProgress: 0,
+                    results: [],
+                    pollInterval: null
+                },
+
+                async init() {
+                    await this.loadInstances();
+                    await this.loadDevices();
+                    await this.loadDeviceTypes();
+                    // Load HA versions in background
+                    this.loadHAVersions();
+                },
+
+                async loadInstances() {
+                    try {
+                        const response = await fetch('/api/instances');
+                        this.instances = await response.json();
+                    } catch (error) {
+                        console.error('Error loading instances:', error);
+                    }
+                },
+
+                async switchInstance() {
+                    this.filters.instance = this.currentInstance;
+                    await this.loadDevices();
+                },
+
+                async loadDevices() {
+                    this.loading = true;
+                    try {
+                        // Build query params
+                        const params = new URLSearchParams();
+                        if (this.currentInstance) {
+                            params.append('instance', this.currentInstance);
+                        }
+
+                        const url = '/api/devices' + (params.toString() ? '?' + params.toString() : '');
+                        const response = await fetch(url);
+                        const data = await response.json();
+                        this.devices = data.devices;
+                        this.filterDevices();
+                    } catch (error) {
+                        console.error('Error loading devices:', error);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                async loadDeviceTypes() {
+                    try {
+                        const response = await fetch('/api/devices/types');
+                        const data = await response.json();
+                        this.deviceTypes = data.types || [];
+                    } catch (error) {
+                        console.error('Error loading device types:', error);
+                    }
+                },
+
+                filterDevices() {
+                    let filtered = this.devices;
+
+                    // Search filter
+                    if (this.search) {
+                        const searchLower = this.search.toLowerCase();
+                        filtered = filtered.filter(d =>
+                            d.name.toLowerCase().includes(searchLower) ||
+                            (d.friendly_name && d.friendly_name.toLowerCase().includes(searchLower)) ||
+                            d.device_type.toLowerCase().includes(searchLower) ||
+                            (d.room && d.room.toLowerCase().includes(searchLower)) ||
+                            (d.area && d.area.toLowerCase().includes(searchLower))
+                        );
+                    }
+
+                    // Instance filter
+                    if (this.filters.instance) {
+                        filtered = filtered.filter(d => d.instance === this.filters.instance);
+                    }
+
+                    // Type filter
+                    if (this.filters.type) {
+                        filtered = filtered.filter(d => d.device_type === this.filters.type);
+                    }
+
+                    // Calculate stats from current filtered set (before stat filter)
+                    const statsTotal = filtered.length;
+                    const statsOnline = filtered.filter(d => d.status === 'online').length;
+                    const statsOffline = filtered.filter(d => d.status === 'offline').length;
+                    const statsUpdates = filtered.filter(d => d.update_available).length;
+
+                    // Apply stat filter
+                    if (this.selectedStatFilter === 'online') {
+                        filtered = filtered.filter(d => d.status === 'online');
+                    } else if (this.selectedStatFilter === 'offline') {
+                        filtered = filtered.filter(d => d.status === 'offline');
+                    } else if (this.selectedStatFilter === 'updates') {
+                        filtered = filtered.filter(d => d.update_available);
+                    }
+                    // 'all' shows everything (no additional filter)
+
+                    this.filteredDevices = filtered;
+
+                    // Set stats (these show counts from before stat filter is applied)
+                    this.stats.total = statsTotal;
+                    this.stats.online = statsOnline;
+                    this.stats.offline = statsOffline;
+                    this.stats.updates = statsUpdates;
+
+                    this.updateView();
+                },
+
+                selectStatFilter(filter) {
+                    this.selectedStatFilter = filter;
+                    this.filterDevices();
+                },
+
+                get groupedDevices() {
+                    if (this.groupBy === 'none') return {};
+
+                    const grouped = {};
+                    this.filteredDevices.forEach(device => {
+                        const key = device[this.groupBy === 'type' ? 'device_type' : this.groupBy];
+                        if (!grouped[key]) grouped[key] = [];
+                        grouped[key].push(device);
+                    });
+                    return grouped;
+                },
+
+                toggleGroup(key) {
+                    const index = this.expandedGroups.indexOf(key);
+                    if (index > -1) {
+                        this.expandedGroups.splice(index, 1);
+                    } else {
+                        this.expandedGroups.push(key);
+                    }
+                },
+
+                toggleAll(checked) {
+                    if (checked) {
+                        this.selectedDevices = this.filteredDevices.map(d => d.name);
+                    } else {
+                        this.selectedDevices = [];
+                    }
+                },
+
+                clearSelection() {
+                    this.selectedDevices = [];
+                },
+
+                async updateDevice(device) {
+                    alert(`Update ${device.name} - Coming soon!`);
+                },
+
+                async bulkUpdate() {
+                    if (confirm(`Update ${this.selectedDevices.length} devices?`)) {
+                        alert('Bulk update - Coming soon!');
+                    }
+                },
+
+                async refreshDevices() {
+                    await this.loadDevices();
+                },
+
+                updateView() {
+                    // Expand all groups by default in grouped view
+                    if (this.groupBy !== 'none') {
+                        this.expandedGroups = Object.keys(this.groupedDevices);
+                    }
+                },
+
+                openDeviceModal(device) {
+                    this.deviceModal.device = device;
+                    this.deviceModal.show = true;
+                    this.deviceModal.output = '';
+                    this.deviceModal.loading = false;
+                },
+
+                closeDeviceModal() {
+                    this.deviceModal.show = false;
+                    this.deviceModal.device = null;
+                    this.deviceModal.output = '';
+                    this.deviceModal.loading = false;
+                },
+
+                async deviceAction(action) {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    this.deviceModal.loading = true;
+                    this.deviceModal.output = '';
+
+                    try {
+                        // Use yaml_filename for API calls (original file name)
+                        const deviceName = device.yaml_filename || device.name;
+
+                        // Use WebSocket streaming for compile and upload
+                        if (action === 'compile' || action === 'upload') {
+                            this.deviceModal.output = `Starting ${action}...\n\n`;
+
+                            // Determine WebSocket URL
+                            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                            const wsUrl = `${protocol}//${window.location.host}/ws/${action}`;
+
+                            const ws = new WebSocket(wsUrl);
+
+                            ws.onopen = () => {
+                                // Send spawn message to start operation
+                                ws.send(JSON.stringify({
+                                    type: 'spawn',
+                                    instance: device.instance,
+                                    device: deviceName
+                                }));
+                            };
+
+                            ws.onmessage = (event) => {
+                                const data = JSON.parse(event.data);
+
+                                if (data.type === 'line') {
+                                    this.deviceModal.output += data.data + '\n';
+                                } else if (data.type === 'exit') {
+                                    ws.close();
+                                    this.deviceModal.loading = false;
+                                    if (data.code === 0) {
+                                        this.deviceModal.output += '\n✅ Completed successfully!';
+                                    } else {
+                                        this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
+                                    }
+                                } else if (data.type === 'error') {
+                                    this.deviceModal.output += `\n❌ Error: ${data.data}`;
+                                    ws.close();
+                                    this.deviceModal.loading = false;
+                                }
+                            };
+
+                            ws.onerror = (error) => {
+                                this.deviceModal.output += '\n❌ WebSocket connection error';
+                                this.deviceModal.loading = false;
+                            };
+
+                            ws.onclose = (event) => {
+                                if (this.deviceModal.loading) {
+                                    // Connection closed unexpectedly
+                                    this.deviceModal.output += '\n❌ Connection closed unexpectedly';
+                                    this.deviceModal.loading = false;
+                                }
+                            };
+
+                            // Don't set loading to false here - will be done by the stream
+                            return;
+                        }
+
+                        // Non-streaming actions (validate, logs, config, clean)
+                        let url = `/api/device/${device.instance}/${deviceName}/${action}`;
+                        let method = ['validate', 'clean'].includes(action) ? 'POST' : 'GET';
+
+                        const response = await fetch(url, { method });
+                        const data = await response.json();
+
+                        if (action === 'config') {
+                            this.deviceModal.output = data.config || 'No configuration found';
+                        } else if (action === 'logs') {
+                            this.deviceModal.output = data.logs || data.error || 'No logs available';
+                        } else {
+                            this.deviceModal.output = data.output || data.error || 'Action completed';
+                        }
+                    } catch (error) {
+                        this.deviceModal.output = `Error: ${error.message}`;
+                    } finally {
+                        this.deviceModal.loading = false;
+                    }
+                },
+
+                async compileAndDownload() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    this.deviceModal.loading = true;
+                    this.deviceModal.output = 'Starting compile for firmware download...\n\n';
+
+                    const deviceName = device.yaml_filename || device.name;
+
+                    // Use WebSocket to compile
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws/compile`;
+                    const ws = new WebSocket(wsUrl);
+
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({
+                            type: 'spawn',
+                            instance: device.instance,
+                            device: deviceName
+                        }));
+                    };
+
+                    ws.onmessage = async (event) => {
+                        const data = JSON.parse(event.data);
+
+                        if (data.type === 'line') {
+                            this.deviceModal.output += data.data + '\n';
+                        } else if (data.type === 'exit') {
+                            ws.close();
+                            this.deviceModal.loading = false;
+
+                            if (data.code === 0) {
+                                this.deviceModal.output += '\n✅ Compile completed successfully!\n\n🔍 Verifying firmware...\n';
+
+                                // Download firmware
+                                const firmwareUrl = `/api/device/${device.instance}/${deviceName}/firmware`;
+                                const response = await fetch(firmwareUrl);
+
+                                if (response.ok) {
+                                    this.deviceModal.output += '✅ Firmware ready! Starting download...\n';
+                                    window.open(firmwareUrl, '_blank');
+                                } else {
+                                    const errorData = await response.json();
+                                    this.deviceModal.output += `\n❌ Firmware not found: ${errorData.error || 'Unknown error'}`;
+                                }
+                            } else {
+                                this.deviceModal.output += `\n❌ Compile failed with exit code ${data.code}`;
+                            }
+                        } else if (data.type === 'error') {
+                            this.deviceModal.output += `\n❌ Error: ${data.data}`;
+                            ws.close();
+                            this.deviceModal.loading = false;
+                        }
+                    };
+
+                    ws.onerror = (error) => {
+                        this.deviceModal.output += '\n❌ WebSocket connection error';
+                        this.deviceModal.loading = false;
+                    };
+
+                    ws.onclose = (event) => {
+                        if (this.deviceModal.loading) {
+                            this.deviceModal.output += '\n❌ Connection closed unexpectedly';
+                            this.deviceModal.loading = false;
+                        }
+                    };
+                },
+
+                async downloadFirmware() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    const deviceName = device.yaml_filename || device.name;
+                    const url = `/api/device/${device.instance}/${deviceName}/firmware`;
+
+                    try {
+                        // Try to download firmware
+                        const response = await fetch(url);
+
+                        if (response.ok) {
+                            // Firmware exists, trigger download
+                            window.open(url, '_blank');
+                        } else if (response.status === 404) {
+                            // Firmware doesn't exist, compile first
+                            const data = await response.json();
+
+                            if (data.error && data.error.includes('not been compiled')) {
+                                const confirmed = confirm('⚙️ Device not compiled yet.\n\nCompile now? (will take 1-3 minutes)');
+                                if (confirmed) {
+                                    this.deviceModal.output = 'Starting compile for firmware download...\n\n';
+                                    this.deviceModal.loading = true;
+
+                                    // Wait for compile to complete using EventSource
+                                    await new Promise((resolve, reject) => {
+                                        const streamUrl = `/api/device/${device.instance}/${deviceName}/compile/stream`;
+                                        const eventSource = new EventSource(streamUrl);
+
+                                        eventSource.onmessage = (event) => {
+                                            const data = JSON.parse(event.data);
+
+                                            if (data.line) {
+                                                this.deviceModal.output += data.line + '\n';
+                                            } else if (data.done) {
+                                                eventSource.close();
+                                                this.deviceModal.loading = false;
+                                                if (data.success) {
+                                                    resolve(true);
+                                                } else {
+                                                    reject(new Error('Compile failed'));
+                                                }
+                                            } else if (data.error) {
+                                                this.deviceModal.output += `\n❌ Error: ${data.error}`;
+                                                eventSource.close();
+                                                this.deviceModal.loading = false;
+                                                reject(new Error(data.error));
+                                            }
+                                        };
+
+                                        eventSource.onerror = (error) => {
+                                            this.deviceModal.output += '\n❌ Connection error';
+                                            eventSource.close();
+                                            this.deviceModal.loading = false;
+                                            reject(new Error('Connection error'));
+                                        };
+                                    });
+
+                                    // After compile, verify firmware exists before downloading
+                                    this.deviceModal.output += '\n\n🔍 Verifying firmware file...\n';
+                                    const verifyResponse = await fetch(url);
+
+                                    if (verifyResponse.ok) {
+                                        if (confirm('✅ Compile complete!\n\nDownload firmware now?')) {
+                                            window.open(url, '_blank');
+                                        }
+                                    } else {
+                                        const verifyData = await verifyResponse.json();
+                                        alert('❌ Firmware not found after compile.\n\n' +
+                                              'This usually means:\n' +
+                                              '• Compile had errors (check output above)\n' +
+                                              '• Firmware is in an unexpected location\n\n' +
+                                              'Error: ' + (verifyData.error || 'Unknown'));
+                                    }
+                                }
+                            } else {
+                                alert('❌ ' + (data.error || 'Firmware not found'));
+                            }
+                        } else {
+                            alert('❌ Error downloading firmware');
+                        }
+                    } catch (error) {
+                        console.error('Download error:', error);
+                        alert('❌ Error: ' + error.message);
+                        this.deviceModal.loading = false;
+                    }
+                },
+
+                toggleEditMode() {
+                    this.deviceModal.editMode = true;
+                    this.deviceModal.originalOutput = this.deviceModal.output;
+                },
+
+                cancelEdit() {
+                    this.deviceModal.editMode = false;
+                    this.deviceModal.output = this.deviceModal.originalOutput;
+                },
+
+                async saveConfig() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    this.deviceModal.loading = true;
+
+                    try {
+                        // Use yaml_filename for API calls (original file name)
+                        const deviceName = device.yaml_filename || device.name;
+                        const response = await fetch(`/api/device/${device.instance}/${deviceName}/config`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({config: this.deviceModal.output})
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            this.deviceModal.editMode = false;
+                            this.deviceModal.originalOutput = this.deviceModal.output;
+                            alert('Configuration saved successfully!');
+                        } else {
+                            alert(`Error: ${data.error}`);
+                        }
+                    } catch (error) {
+                        alert(`Error saving configuration: ${error.message}`);
+                    } finally {
+                        this.deviceModal.loading = false;
+                    }
+                },
+
+                // Common Files Management
+                async loadCommonFiles() {
+                    if (!this.currentInstance) return;
+
+                    this.commonFiles.loading = true;
+                    try {
+                        const response = await fetch(`/api/common/${this.currentInstance}`);
+                        const data = await response.json();
+                        this.commonFiles.list = data.files || [];
+                    } catch (error) {
+                        console.error('Error loading common files:', error);
+                    } finally {
+                        this.commonFiles.loading = false;
+                    }
+                },
+
+                async openCommonFile(file) {
+                    try {
+                        const response = await fetch(`/api/common/${this.currentInstance}/${file.name}`);
+                        const data = await response.json();
+                        this.commonFiles.currentFile = file.name;
+                        this.commonFiles.content = data.content || '';
+                        this.commonFiles.modalOpen = true;
+                    } catch (error) {
+                        alert(`Error loading file: ${error.message}`);
+                    }
+                },
+
+                createCommonFile() {
+                    const fileName = prompt('Enter file name (e.g., common-settings.yaml):');
+                    if (!fileName) return;
+
+                    if (!fileName.endsWith('.yaml')) {
+                        alert('File must have .yaml extension');
+                        return;
+                    }
+
+                    this.commonFiles.currentFile = fileName;
+                    this.commonFiles.content = '# New common file\n\n';
+                    this.commonFiles.modalOpen = true;
+                },
+
+                async saveCommonFile() {
+                    if (!this.commonFiles.currentFile) return;
+
+                    try {
+                        const response = await fetch(`/api/common/${this.currentInstance}/${this.commonFiles.currentFile}`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({content: this.commonFiles.content})
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            alert('File saved successfully!');
+                            this.closeCommonFileModal();
+                            await this.loadCommonFiles();
+                        } else {
+                            alert(`Error: ${data.error}`);
+                        }
+                    } catch (error) {
+                        alert(`Error saving file: ${error.message}`);
+                    }
+                },
+
+                async deleteCommonFile(file) {
+                    if (!confirm(`Delete ${file.name}?`)) return;
+
+                    try {
+                        const response = await fetch(`/api/common/${this.currentInstance}/${file.name}`, {
+                            method: 'DELETE'
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            alert('File deleted successfully!');
+                            await this.loadCommonFiles();
+                        } else {
+                            alert(`Error: ${data.error}`);
+                        }
+                    } catch (error) {
+                        alert(`Error deleting file: ${error.message}`);
+                    }
+                },
+
+                closeCommonFileModal() {
+                    this.commonFiles.modalOpen = false;
+                    this.commonFiles.currentFile = '';
+                    this.commonFiles.content = '';
+                },
+
+                // HA API Version Integration
+                async loadHAVersions() {
+                    // Load config first if not already loaded
+                    if (!this.settings.homeassistant.url) {
+                        await this.loadSettings();
+                    }
+
+                    const ha_url = this.settings.homeassistant.url;
+                    const ha_token = this.settings.homeassistant.token;
+
+                    if (!ha_url || !ha_token) {
+                        console.warn('HA API not configured. Go to Settings tab to configure.');
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch('/api/ha/versions', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ha_url, ha_token})
+                        });
+
+                        const data = await response.json();
+
+                        if (data.versions) {
+                            // Update devices with HA versions
+                            this.devices.forEach(device => {
+                                const deviceName = device.name.replace(/-/g, '_');
+                                if (data.versions[deviceName]) {
+                                    device.current_version = data.versions[deviceName];
+                                    // Check if update available
+                                    if (device.deployed_version && device.deployed_version !== data.versions[deviceName]) {
+                                        device.update_available = true;
+                                    }
+                                }
+                            });
+                            console.log(`Loaded versions from HA for ${data.count} devices`);
+                        }
+                    } catch (error) {
+                        console.error('Error loading HA versions:', error);
+                    }
+                },
+
+                // ============================================================================
+                // SETTINGS METHODS
+                // ============================================================================
+
+                async loadSettings() {
+                    try {
+                        const response = await fetch('/api/config');
+                        const config = await response.json();
+                        this.settings = config;
+                        console.log('Settings loaded');
+                    } catch (error) {
+                        console.error('Error loading settings:', error);
+                    }
+                },
+
+                async saveSettings() {
+                    try {
+                        const response = await fetch('/api/config', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(this.settings)
+                        });
+
+                        const result = await response.json();
+
+                        if (result.success) {
+                            alert('✅ Settings saved successfully!');
+                            // Reload instances in case they changed
+                            await this.loadInstances();
+                        } else {
+                            alert('❌ Error saving settings: ' + (result.error || 'Unknown error'));
+                        }
+                    } catch (error) {
+                        console.error('Error saving settings:', error);
+                        alert('❌ Error saving settings: ' + error.message);
+                    }
+                },
+
+                addInstance() {
+                    this.settings.instances.push({
+                        name: 'New Instance',
+                        slug: 'new-instance',
+                        config_dir: '/path/to/config',
+                        container: 'esphome-container',
+                        dashboard_url: 'https://localhost:6052',
+                        enabled: true
+                    });
+                },
+
+                async checkSubstitutions() {
+                    this.validationResults.loading = true;
+                    this.validationResults.checked = false;
+
+                    try {
+                        const response = await fetch('/api/check-substitutions');
+                        const data = await response.json();
+
+                        this.validationResults = {
+                            checked: true,
+                            loading: false,
+                            total: data.total_devices,
+                            compliant: data.compliant_devices,
+                            missingRecommended: data.missing_recommended || 0,
+                            issues: data.issues || [],
+                            recommendedIssues: data.recommended_issues || []
+                        };
+
+                        if (data.issues.length === 0 && data.recommended_issues.length === 0) {
+                            alert('✅ All devices have required and recommended substitutions!');
+                        } else if (data.issues.length === 0) {
+                            alert(`✅ All devices have required substitutions!\n💡 ${data.missing_recommended} device(s) missing recommended substitutions (physical_location).`);
+                        } else {
+                            console.log('Validation issues:', data);
+                        }
+                    } catch (error) {
+                        console.error('Error checking substitutions:', error);
+                        alert('❌ Error checking substitutions: ' + error.message);
+                        this.validationResults.loading = false;
+                    }
+                },
+
+                async cleanPlatformIO(instanceSlug) {
+                    const confirmed = confirm('⚠️ Clean PlatformIO cache?\n\nThis will delete toolchain packages. Next compile will reinstall them (takes 1-2 minutes longer).');
+                    if (!confirmed) return;
+
+                    try {
+                        const response = await fetch(`/api/instance/${instanceSlug}/clean-platformio`, {
+                            method: 'POST'
+                        });
+                        const data = await response.json();
+
+                        if (data.success) {
+                            alert('✅ PlatformIO cache cleaned!\n\nNext compile will reinstall toolchain.');
+                        } else {
+                            alert('❌ Failed to clean cache: ' + (data.error || 'Unknown error'));
+                        }
+                    } catch (error) {
+                        console.error('Error cleaning PlatformIO:', error);
+                        alert('❌ Error: ' + error.message);
+                    }
+                },
+
+                openNativeDashboard() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+
+                    // Get dashboard URL for this instance
+                    const dashboardUrls = {
+                        'production': 'https://codex.grid.foxrunn.net:6052',
+                        'lab': 'https://codex.grid.foxrunn.net:6054'
+                    };
+
+                    const baseUrl = dashboardUrls[device.instance];
+                    if (!baseUrl) {
+                        alert('No dashboard URL configured for this instance');
+                        return;
+                    }
+
+                    // Open base dashboard - SPA routing prevents deep linking
+                    alert(`Opening ${device.instance} ESPHome dashboard.\n\nFind device: ${device.name} (${device.config_file})`);
+                    window.open(baseUrl, `esphome-${device.instance}`, 'width=1400,height=900');
+                },
+
+                // ============================================================================
+                // BULK OPERATIONS METHODS
+                // ============================================================================
+
+                async bulkOperation(operation) {
+                    if (this.selectedDevices.length === 0) {
+                        alert('Please select devices first');
+                        return;
+                    }
+
+                    const confirmed = confirm(`${operation.toUpperCase()} ${this.selectedDevices.length} selected devices?\n\nThis will run on Codex and continue even if you close your browser.`);
+                    if (!confirmed) return;
+
+                    try {
+                        // Build device list from selected
+                        const deviceList = this.devices
+                            .filter(d => this.selectedDevices.includes(d.name))
+                            .map(d => ({
+                                instance: d.instance,
+                                name: d.yaml_filename || d.name
+                            }));
+
+                        // Start bulk operation
+                        const response = await fetch('/api/bulk-operation', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                operation: operation,
+                                devices: deviceList
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            // Show progress modal
+                            this.bulkProgress = {
+                                show: true,
+                                operationId: data.operation_id,
+                                operation: operation,
+                                status: 'running',
+                                total: deviceList.length,
+                                completed: 0,
+                                success: 0,
+                                failed: 0,
+                                inProgress: deviceList.length,
+                                results: [],
+                                pollInterval: null
+                            };
+
+                            // Start polling for progress
+                            this.pollBulkProgress();
+                        } else {
+                            alert('❌ Failed to start operation: ' + (data.error || 'Unknown error'));
+                        }
+                    } catch (error) {
+                        console.error('Error starting bulk operation:', error);
+                        alert('❌ Error: ' + error.message);
+                    }
+                },
+
+                async bulkDownload() {
+                    if (this.selectedDevices.length === 0) {
+                        alert('Please select devices first');
+                        return;
+                    }
+
+                    const confirmed = confirm(`Compile and download firmware for ${this.selectedDevices.length} devices?\n\nThis will compile all selected devices (takes time), then show download links.`);
+                    if (!confirmed) return;
+
+                    // Start bulk compile operation
+                    await this.bulkOperation('compile');
+
+                    // Add message to progress modal about downloads
+                    alert('💡 Tip: After compile completes, download firmware from History tab → View Details → Download links per device');
+                },
+
+                async pollBulkProgress() {
+                    if (!this.bulkProgress.operationId) return;
+
+                    try {
+                        const response = await fetch(`/api/operations/${this.bulkProgress.operationId}/progress`);
+                        const data = await response.json();
+
+                        this.bulkProgress.completed = data.completed_count;
+                        this.bulkProgress.inProgress = data.in_progress_count;
+                        this.bulkProgress.success = data.operation.success_count || 0;
+                        this.bulkProgress.failed = data.operation.failure_count || 0;
+                        this.bulkProgress.status = data.operation.status;
+                        this.bulkProgress.results = data.results || [];
+
+                        // Continue polling if still running
+                        if (data.operation.status === 'running') {
+                            this.bulkProgress.pollInterval = setTimeout(() => this.pollBulkProgress(), 2000);
+                        } else {
+                            // Operation complete
+                            console.log('✅ Bulk operation completed');
+                        }
+                    } catch (error) {
+                        console.error('Error polling progress:', error);
+                        // Retry on error
+                        if (this.bulkProgress.status === 'running') {
+                            this.bulkProgress.pollInterval = setTimeout(() => this.pollBulkProgress(), 3000);
+                        }
+                    }
+                },
+
+                closeBulkProgress() {
+                    // Clear polling interval
+                    if (this.bulkProgress.pollInterval) {
+                        clearTimeout(this.bulkProgress.pollInterval);
+                    }
+                    this.bulkProgress.show = false;
+                    // Clear selection
+                    this.selectedDevices = [];
+                },
+
+                clearSelection() {
+                    this.selectedDevices = [];
+                },
+
+                toggleAll(checked) {
+                    if (checked) {
+                        this.selectedDevices = this.filteredDevices.map(d => d.name);
+                    } else {
+                        this.selectedDevices = [];
+                    }
+                },
+
+                // ============================================================================
+                // HISTORY METHODS
+                // ============================================================================
+
+                async loadOperationHistory() {
+                    this.history.loading = true;
+                    try {
+                        const response = await fetch('/api/operations?limit=50');
+                        const data = await response.json();
+                        this.history.operations = data.operations || [];
+                    } catch (error) {
+                        console.error('Error loading operation history:', error);
+                    } finally {
+                        this.history.loading = false;
+                    }
+                },
+
+                async viewOperationDetails(operationId) {
+                    try {
+                        const response = await fetch(`/api/operations/${operationId}`);
+                        const data = await response.json();
+
+                        // Show modal with details
+                        let resultsHtml = '<div class="space-y-2">';
+                        data.results.forEach(result => {
+                            const statusColor = result.status === 'success' ? 'green' : 'red';
+                            resultsHtml += `
+                                <div class="border-l-4 border-${statusColor}-500 pl-3 py-2">
+                                    <div class="font-medium">${result.device_name} (${result.instance})</div>
+                                    <div class="text-sm text-gray-600">Status: ${result.status}</div>
+                                    ${result.error_message ? `<div class="text-sm text-red-600">${result.error_message}</div>` : ''}
+                                    <div class="text-xs text-gray-500">Duration: ${result.duration_seconds}s</div>
+                                </div>
+                            `;
+                        });
+                        resultsHtml += '</div>';
+
+                        // Simple alert for now (could be enhanced with a proper modal)
+                        const summary = `Operation ${operationId}: ${data.operation.operation_type}\n` +
+                                      `Devices: ${data.operation.device_count}\n` +
+                                      `Success: ${data.operation.success_count}\n` +
+                                      `Failed: ${data.operation.failure_count}\n` +
+                                      `Started: ${new Date(data.operation.started_at).toLocaleString()}`;
+
+                        alert(summary + '\n\nSee console for detailed results.');
+                        console.log('Operation Details:', data);
+                    } catch (error) {
+                        console.error('Error loading operation details:', error);
+                        alert('Error loading operation details');
+                    }
+                }
+            }
+        }
+    </script>
+
+    </script>
+</body>
+</html>

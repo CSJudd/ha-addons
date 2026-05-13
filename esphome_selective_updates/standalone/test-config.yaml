@@ -1,0 +1,12 @@
+mode: docker
+esphome_config_dir: /opt/data-services/esphome/production
+esphome_container: codex-esphome-production
+state_dir: /var/lib/esphome-updater-production
+log_dir: /var/log/esphome-updater
+ota_password: ""
+skip_offline: true
+delay_between_updates: 3
+dry_run: true
+max_devices_per_run: 1
+start_from_device: ""
+update_only_these: []

@@ -1223,6 +1223,97 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"error": str(e)})
 
+class CommonFilesHandler(tornado.web.RequestHandler):
+    """List common/shared YAML files for an ESPHome instance"""
+    def get(self, instance_slug):
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            self.set_status(404)
+            return self.write({"error": "Instance not found"})
+
+        common_dir = Path(instance_config["config_dir"]) / "common"
+        if not common_dir.exists():
+            return self.write({"files": []})
+
+        files = []
+        for f in sorted(common_dir.iterdir()):
+            if f.is_file() and f.suffix == ".yaml" and not f.name.endswith(".bak"):
+                files.append({
+                    "name": f.name,
+                    "size": f.stat().st_size,
+                    "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                })
+
+        self.write({"files": files})
+
+
+class CommonFileHandler(tornado.web.RequestHandler):
+    """Read, save, or delete a specific common YAML file"""
+
+    def _resolve(self, instance_slug: str, filename: str):
+        """Return (instance_config, resolved_path) or raise 404/400"""
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            self.set_status(404)
+            self.write({"error": "Instance not found"})
+            return None, None
+
+        # Prevent path traversal
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            self.set_status(400)
+            self.write({"error": "Invalid filename"})
+            return None, None
+
+        common_dir = Path(instance_config["config_dir"]) / "common"
+        common_dir.mkdir(exist_ok=True)
+        return instance_config, common_dir / filename
+
+    def get(self, instance_slug, filename):
+        _, path = self._resolve(instance_slug, filename)
+        if path is None:
+            return
+
+        if not path.exists():
+            self.set_status(404)
+            return self.write({"error": "File not found"})
+
+        self.write({"content": path.read_text(encoding="utf-8")})
+
+    def post(self, instance_slug, filename):
+        _, path = self._resolve(instance_slug, filename)
+        if path is None:
+            return
+
+        data = json.loads(self.request.body)
+        content = data.get("content", "")
+
+        # Backup if file already exists
+        if path.exists():
+            backup = path.with_suffix(f".yaml.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            path.rename(backup)
+
+        try:
+            path.write_text(content, encoding="utf-8")
+            self.write({"success": True, "message": f"Saved {filename}"})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+    def delete(self, instance_slug, filename):
+        _, path = self._resolve(instance_slug, filename)
+        if path is None:
+            return
+
+        if not path.exists():
+            self.set_status(404)
+            return self.write({"error": "File not found"})
+
+        # Move to backup instead of hard-delete
+        backup = path.with_suffix(f".yaml.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        path.rename(backup)
+        self.write({"success": True, "message": f"Deleted {filename} (backup kept)"})
+
+
 class ConfigHandler(tornado.web.RequestHandler):
     """Get/update dashboard configuration"""
     def get(self):
@@ -1884,6 +1975,8 @@ def make_app():
         (r"/api/device/([^/]+)/([^/]+)/firmware", DeviceFirmwareHandler),
         (r"/api/instance/([^/]+)/clean-platformio", CleanPlatformIOHandler),
         (r"/api/system/kill-stuck-processes", KillStuckProcessesHandler),
+        (r"/api/common/([^/]+)", CommonFilesHandler),
+        (r"/api/common/([^/]+)/(.+)", CommonFileHandler),
         (r"/api/config", ConfigHandler),
         (r"/api/check-substitutions", CheckSubstitutionsHandler),
         (r"/api/ha/versions", HAVersionsHandler),

@@ -1000,6 +1000,104 @@ class DeviceConfigHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"error": f"Failed to save: {str(e)}"})
 
+_ESP32_BOARDS = {"esp32dev", "esp32-c3-devkitm-1", "esp32-s2-saola-1", "esp32-s3-devkitc-1"}
+_ESP8266_BOARDS = {"nodemcuv2", "d1_mini", "esp01_1m", "esp8285"}
+
+def _device_yaml_template(data: dict) -> str:
+    """Generate a starter YAML for a new ESPHome device matching fleet conventions"""
+    name = data["device_name"]
+    board = data.get("board", "esp32dev")
+    esphome_version = data.get("esphome_version") or "*"
+    static_ip = data.get("static_ip", "")
+
+    if board in _ESP32_BOARDS or board.startswith("esp32"):
+        platform_block = f"esp32:\n  board: {board}"
+        keepalive = "common/keepalive-esp32.yaml"
+    else:
+        platform_block = f"esp8266:\n  board: {board}\n  restore_from_flash: true"
+        keepalive = "common/keepalive-esp8266.yaml"
+
+    ip_line = f"\n  device_static_ip: {static_ip}" if static_ip else ""
+
+    return f"""substitutions:
+  name: {name}
+  friendly_name: {data.get("friendly_name", name)}
+  area: {data.get("area", "Unknown")}{ip_line}
+  esphome_version: "{esphome_version}"
+  device_type: "{data.get("device_type", "unknown")}"
+  physical_location: "{data.get("physical_location", "")}"
+
+packages:
+  common_settings: !include common/common-settings.yaml
+  keepalive: !include {keepalive}
+  common_buttons: !include common/common-buttons.yaml
+  common_ota: !include common/common-ota.yaml
+
+esphome:
+  name: ${{name}}
+  friendly_name: ${{friendly_name}}
+
+{platform_block}
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+{f"  manual_ip:" + chr(10) + f"    static_ip: {static_ip}" + chr(10) + f"    gateway: 10.128.0.1" + chr(10) + f"    subnet: 255.255.0.0" if static_ip else ""}
+
+logger:
+
+api:
+
+ota:
+  - platform: esphome
+
+# ----------------------------------------------------------------
+# Device-specific configuration goes here
+"""
+
+
+class DeviceCreateHandler(tornado.web.RequestHandler):
+    """Create a new ESPHome device YAML config"""
+    def post(self, instance_slug):
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            self.set_status(404)
+            return self.write({"error": "Instance not found"})
+
+        try:
+            data = json.loads(self.request.body)
+        except Exception:
+            self.set_status(400)
+            return self.write({"error": "Invalid JSON body"})
+
+        device_name = (data.get("device_name") or "").strip()
+        if not device_name:
+            self.set_status(400)
+            return self.write({"error": "device_name is required"})
+
+        # Sanitize filename: allow alphanumerics, hyphens, underscores
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9_-]+$', device_name):
+            self.set_status(400)
+            return self.write({"error": "device_name may only contain letters, numbers, hyphens, and underscores"})
+
+        config_dir = Path(instance_config["config_dir"])
+        yaml_file = config_dir / f"{device_name}.yaml"
+
+        if yaml_file.exists():
+            self.set_status(409)
+            return self.write({"error": f"{device_name}.yaml already exists"})
+
+        try:
+            yaml_file.write_text(_device_yaml_template(data), encoding="utf-8")
+            # Invalidate device cache for this instance
+            _device_cache.pop(instance_slug, None)
+            self.write({"success": True, "device_name": device_name, "file": yaml_file.name})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+
 class DeviceValidateHandler(tornado.web.RequestHandler):
     """Validate device configuration"""
     def post(self, instance, device_name):
@@ -1967,6 +2065,7 @@ def make_app():
         (r"/api/devices", DevicesHandler),
         (r"/api/devices/types", DeviceTypesHandler),
         (r"/api/stats", StatsHandler),
+        (r"/api/device/([^/]+)/create", DeviceCreateHandler),
         (r"/api/device/([^/]+)/([^/]+)", DeviceDetailHandler),
         (r"/api/device/([^/]+)/([^/]+)/config", DeviceConfigHandler),
         (r"/api/device/([^/]+)/([^/]+)/validate", DeviceValidateHandler),

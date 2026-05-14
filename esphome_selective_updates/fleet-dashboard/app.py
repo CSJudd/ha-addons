@@ -369,6 +369,12 @@ def get_device_version(ip: str) -> Optional[str]:
     except Exception:
         return None
 
+async def _query_one_device(name: str, ip: str) -> tuple:
+    """Return (name, version_or_None) for a single device"""
+    version = await get_device_version_async(ip)
+    return name, version
+
+
 def _compute_update_available(
     deployed_version: Optional[str],
     pinned_version: str,
@@ -806,6 +812,89 @@ class UploadWebSocketHandler(BaseWebSocketHandler):
         super().on_close()
 
 # ============================================================================
+# LOGS WEBSOCKET HANDLER
+# ============================================================================
+
+class LogsWebSocketHandler(BaseWebSocketHandler):
+    """WebSocket handler for live device log streaming via esphome logs"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._proc = None
+
+    async def on_message(self, message):
+        try:
+            data = json.loads(message)
+            if data.get("type") == "spawn":
+                await self.handle_logs(data)
+            elif data.get("type") == "stop":
+                if self._proc and self._proc.returncode is None:
+                    self._proc.proc.kill()
+        except Exception as e:
+            await self.write_message(json.dumps({"type": "error", "data": str(e)}))
+
+    async def handle_logs(self, data):
+        if self._proc is not None:
+            return
+
+        instance = data.get("instance")
+        device_name = data.get("device")
+
+        if not instance or not device_name:
+            await self.write_message(json.dumps({"type": "error", "data": "Missing instance or device name"}))
+            return
+
+        instance_config = get_instance_config(instance)
+        if not instance_config:
+            await self.write_message(json.dumps({"type": "error", "data": f"Instance {instance} not found"}))
+            return
+
+        # esphome logs runs indefinitely; wrap in script to force unbuffered output
+        docker_cmd = f"docker exec {instance_config['container']} esphome logs /config/{device_name}.yaml --no-color"
+        cmd = ["script", "-qfc", docker_cmd, "/dev/null"]
+
+        try:
+            self._proc = tornado.process.Subprocess(
+                cmd,
+                stdout=tornado.process.Subprocess.STREAM,
+                stderr=subprocess.STDOUT
+            )
+            tornado.ioloop.IOLoop.current().spawn_callback(self._stream_output)
+        except Exception as e:
+            await self.write_message(json.dumps({"type": "error", "data": str(e)}))
+
+    @tornado.gen.coroutine
+    def _stream_output(self):
+        try:
+            while True:
+                try:
+                    line = yield self._proc.stdout.read_until_regex(b"[\n\r]")
+                    text = line.decode("utf-8", "replace").rstrip()
+                    self.write_message(json.dumps({"type": "line", "data": text}))
+                except tornado.iostream.StreamClosedError:
+                    break
+                except Exception:
+                    break
+
+            yield self._proc.wait_for_exit(raise_error=False)
+            self.write_message(json.dumps({"type": "exit", "code": self._proc.returncode}))
+
+        except tornado.websocket.WebSocketClosedError:
+            if self._proc and self._proc.returncode is None:
+                self._proc.proc.kill()
+        except Exception as e:
+            try:
+                self.write_message(json.dumps({"type": "error", "data": str(e)}))
+            except Exception:
+                pass
+
+    def on_close(self):
+        if self._proc and self._proc.returncode is None:
+            self._proc.proc.kill()
+        super().on_close()
+
+
+# ============================================================================
 # REST API HANDLERS
 # ============================================================================
 
@@ -1096,6 +1185,44 @@ class DeviceCreateHandler(tornado.web.RequestHandler):
         except Exception as e:
             self.set_status(500)
             self.write({"error": str(e)})
+
+
+class DeviceDeleteHandler(tornado.web.RequestHandler):
+    """Delete a device: YAML config, storage metadata, and build artifacts"""
+    def delete(self, instance_slug, device_name):
+        import shutil
+
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            self.set_status(404)
+            return self.write({"error": "Instance not found"})
+
+        config_dir = Path(instance_config["config_dir"])
+        yaml_file = config_dir / f"{device_name}.yaml"
+
+        if not yaml_file.exists():
+            self.set_status(404)
+            return self.write({"error": f"Device {device_name} not found"})
+
+        # Remove YAML config
+        yaml_file.unlink()
+
+        # Remove storage metadata (ESPHome writes this after first compile)
+        storage_json = config_dir / ".esphome" / "storage" / f"{device_name}.yaml.json"
+        if storage_json.exists():
+            storage_json.unlink()
+
+        # Remove build directory (name may include friendly-name suffix)
+        build_base = config_dir / ".esphome" / "build"
+        if build_base.exists():
+            for build_dir in build_base.glob(f"{device_name}*"):
+                if build_dir.is_dir():
+                    shutil.rmtree(build_dir)
+
+        # Invalidate discovery cache
+        _device_cache.pop(instance_slug, None)
+
+        self.write({"success": True, "message": f"Device {device_name} deleted"})
 
 
 class DeviceValidateHandler(tornado.web.RequestHandler):
@@ -1949,6 +2076,38 @@ def get_builder_current_versions():
         print(f"  Error getting builder versions: {e}")
         return {}
 
+class LiveVersionsHandler(tornado.web.RequestHandler):
+    """Query all devices for their running firmware version via ESPHome native API"""
+
+    async def get(self):
+        # Collect all queryable devices (those with a known IP)
+        queryable = []
+        for instance in CONFIG.get("instances", []):
+            if not instance.get("enabled"):
+                continue
+            for device in discover_devices_cached(instance):
+                if device.get("ip_address"):
+                    queryable.append((device["name"], device["ip_address"]))
+
+        if not queryable:
+            return self.write({"versions": {}, "queried": 0, "found": 0})
+
+        # Query all devices in parallel; each has an internal 3s timeout
+        results = await asyncio.gather(
+            *[_query_one_device(name, ip) for name, ip in queryable],
+            return_exceptions=True
+        )
+
+        versions = {}
+        for result in results:
+            if isinstance(result, tuple):
+                name, version = result
+                if version is not None:
+                    versions[name] = version
+
+        self.write({"versions": versions, "queried": len(queryable), "found": len(versions)})
+
+
 class ESPHomeVersionHandler(tornado.web.RequestHandler):
     """Get latest ESPHome version from GitHub and current builder versions"""
     def get(self):
@@ -2059,6 +2218,7 @@ def make_app():
         # WebSocket handlers
         (r"/ws/compile", CompileWebSocketHandler),
         (r"/ws/upload", UploadWebSocketHandler),
+        (r"/ws/logs", LogsWebSocketHandler),
 
         # API endpoints
         (r"/api/instances", InstancesHandler),
@@ -2066,6 +2226,7 @@ def make_app():
         (r"/api/devices/types", DeviceTypesHandler),
         (r"/api/stats", StatsHandler),
         (r"/api/device/([^/]+)/create", DeviceCreateHandler),
+        (r"/api/device/([^/]+)/([^/]+)/delete", DeviceDeleteHandler),
         (r"/api/device/([^/]+)/([^/]+)", DeviceDetailHandler),
         (r"/api/device/([^/]+)/([^/]+)/config", DeviceConfigHandler),
         (r"/api/device/([^/]+)/([^/]+)/validate", DeviceValidateHandler),
@@ -2079,6 +2240,7 @@ def make_app():
         (r"/api/config", ConfigHandler),
         (r"/api/check-substitutions", CheckSubstitutionsHandler),
         (r"/api/ha/versions", HAVersionsHandler),
+        (r"/api/devices/live-versions", LiveVersionsHandler),
         (r"/api/esphome/version", ESPHomeVersionHandler),
         (r"/api/esphome/update-builder", UpdateBuilderHandler),
         (r"/api/bulk-operation", BulkOperationHandler),

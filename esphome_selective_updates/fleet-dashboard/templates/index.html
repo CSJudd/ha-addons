@@ -48,6 +48,10 @@
                             class="px-4 py-2 bg-blue-500 hover:bg-blue-400 rounded-lg transition">
                         🔄 Refresh
                     </button>
+                    <span x-show="liveVersionsLoading"
+                          class="text-sm text-gray-400 italic animate-pulse">
+                        Fetching live versions…
+                    </span>
                     <button @click="showNewDeviceModal()"
                             class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg transition">
                         ➕ New Device
@@ -792,6 +796,11 @@
                                                class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                                         <span class="ml-2 text-sm text-gray-700">Enabled</span>
                                     </label>
+                                    <button x-show="inst.dashboard_url"
+                                            @click="window.open(inst.dashboard_url, '_blank')"
+                                            class="text-teal-600 hover:text-teal-800 text-sm">
+                                        🔗 Open Dashboard
+                                    </button>
                                     <button @click="settings.instances.splice(index, 1)"
                                             class="text-red-600 hover:text-red-800 text-sm">
                                         🗑️ Remove
@@ -972,8 +981,14 @@
                             <span class="mr-2">💾</span> Download (Compile/Save)
                         </button>
                         <button @click="deviceAction('logs')"
+                                x-show="!deviceModal.logsStreaming"
                                 class="px-4 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center justify-center">
                             <span class="mr-2">📋</span> View Logs
+                        </button>
+                        <button @click="stopLogs()"
+                                x-show="deviceModal.logsStreaming"
+                                class="px-4 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition flex items-center justify-center">
+                            <span class="mr-2">⏹</span> Stop Logs
                         </button>
                         <button @click="deviceAction('clean')"
                                 class="px-4 py-3 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition flex items-center justify-center">
@@ -987,6 +1002,14 @@
                                 x-show="deviceModal.output && !deviceModal.editMode"
                                 class="px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center justify-center">
                             <span class="mr-2">✏️</span> Edit Config
+                        </button>
+                    </div>
+
+                    <!-- Secondary Actions -->
+                    <div class="mt-4 pt-4 border-t border-gray-200 flex gap-2">
+                        <button @click="openNativeDashboard()"
+                                class="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition flex items-center text-sm">
+                            <span class="mr-2">🔗</span> Open ESPHome Dashboard
                         </button>
                     </div>
 
@@ -1322,7 +1345,9 @@
                     loading: false,
                     output: '',
                     editMode: false,
-                    originalOutput: ''
+                    originalOutput: '',
+                    logsStreaming: false,
+                    logsWs: null
                 },
                 newDeviceModal: {
                     show: false,
@@ -1386,15 +1411,15 @@
                 currentBuilderVersions: {},
                 newVersionAvailable: false,
                 updatingBuilders: false,
+                liveVersionsLoading: false,
 
                 async init() {
                     await this.loadInstances();
                     await this.loadDevices();
                     await this.loadDeviceTypes();
-                    // Load HA versions in background
                     this.loadHAVersions();
-                    // Check for new ESPHome version
                     this.checkESPHomeVersion();
+                    this.loadLiveVersions();
                 },
 
                 async loadInstances() {
@@ -1642,15 +1667,21 @@
                         // Use yaml_filename for API calls (original file name)
                         const deviceName = device.yaml_filename || device.name;
 
-                        // Use WebSocket streaming for compile and upload
-                        if (action === 'compile' || action === 'upload') {
-                            this.deviceModal.output = `Starting ${action}...\n\n`;
+                        // Use WebSocket streaming for compile, upload, and logs
+                        if (action === 'compile' || action === 'upload' || action === 'logs') {
+                            if (action === 'logs') {
+                                this.deviceModal.output = `Connecting to live logs for ${deviceName}...\n\nPress Stop to disconnect.\n\n`;
+                                this.deviceModal.logsStreaming = true;
+                            } else {
+                                this.deviceModal.output = `Starting ${action}...\n\n`;
+                            }
 
                             // Determine WebSocket URL
                             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                            const wsUrl = `${protocol}//${window.location.host}/ws/${action}`;
+                            const wsUrl = `${protocol}//${window.location.host}/ws/${action === 'logs' ? 'logs' : action}`;
 
                             const ws = new WebSocket(wsUrl);
+                            if (action === 'logs') this.deviceModal.logsWs = ws;
                             let operationFailed = false;
 
                             ws.onopen = () => {
@@ -1674,19 +1705,19 @@
                                 } else if (data.type === 'exit') {
                                     ws.close();
                                     this.deviceModal.loading = false;
-                                    // Check both exit code and output
-                                    if (data.code === 0 && !operationFailed) {
+                                    this.deviceModal.logsStreaming = false;
+                                    this.deviceModal.logsWs = null;
+                                    if (action === 'logs') {
+                                        this.deviceModal.output += '\n\n— Log stream ended —';
+                                    } else if (data.code === 0 && !operationFailed) {
                                         this.deviceModal.output += '\n✅ Completed successfully!';
+                                    } else if (operationFailed) {
+                                        this.deviceModal.output += `\n❌ ${action.toUpperCase()} FAILED - see errors above`;
                                     } else {
-                                        if (operationFailed) {
-                                            this.deviceModal.output += `\n❌ ${action.toUpperCase()} FAILED - see errors above`;
-                                        } else {
-                                            this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
-                                        }
+                                        this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
                                     }
 
-                                    // Auto-refresh device list to show updated info
-                                    this.refreshDevices();
+                                    if (action !== 'logs') this.refreshDevices();
                                 } else if (data.type === 'error') {
                                     this.deviceModal.output += `\n❌ Error: ${data.data}`;
                                     ws.close();
@@ -1697,12 +1728,17 @@
                             ws.onerror = (error) => {
                                 this.deviceModal.output += '\n❌ WebSocket connection error';
                                 this.deviceModal.loading = false;
+                                this.deviceModal.logsStreaming = false;
+                                this.deviceModal.logsWs = null;
                             };
 
                             ws.onclose = (event) => {
+                                this.deviceModal.logsStreaming = false;
+                                this.deviceModal.logsWs = null;
                                 if (this.deviceModal.loading) {
-                                    // Connection closed unexpectedly
-                                    this.deviceModal.output += '\n❌ Connection closed unexpectedly';
+                                    if (action !== 'logs') {
+                                        this.deviceModal.output += '\n❌ Connection closed unexpectedly';
+                                    }
                                     this.deviceModal.loading = false;
                                 }
                             };
@@ -1711,7 +1747,7 @@
                             return;
                         }
 
-                        // Non-streaming actions (validate, logs, config, clean)
+                        // Non-streaming actions (validate, config, clean)
                         let url = `/api/device/${device.instance}/${deviceName}/${action}`;
                         let method = ['validate', 'clean'].includes(action) ? 'POST' : 'GET';
 
@@ -1720,8 +1756,6 @@
 
                         if (action === 'config') {
                             this.deviceModal.output = data.config || 'No configuration found';
-                        } else if (action === 'logs') {
-                            this.deviceModal.output = data.logs || data.error || 'No logs available';
                         } else {
                             this.deviceModal.output = data.output || data.error || 'Action completed';
                         }
@@ -1837,110 +1871,33 @@
                     };
                 },
 
-                async downloadFirmware() {
-                    const device = this.deviceModal.device;
-                    if (!device) return;
+                stopLogs() {
+                    if (this.deviceModal.logsWs) {
+                        this.deviceModal.logsWs.send(JSON.stringify({type: 'stop'}));
+                        this.deviceModal.logsWs.close();
+                        this.deviceModal.logsWs = null;
+                    }
+                    this.deviceModal.logsStreaming = false;
+                    this.deviceModal.loading = false;
+                },
 
-                    const deviceName = device.yaml_filename || device.name;
-                    const url = `/api/device/${device.instance}/${deviceName}/firmware`;
-
+                async loadLiveVersions() {
                     try {
-                        // Try to download firmware
-                        const response = await fetch(url);
-
-                        if (response.ok) {
-                            // Extract filename from Content-Disposition header
-                            const contentDisposition = response.headers.get('content-disposition');
-                            let filename = `${deviceName}_firmware.bin`;
-                            if (contentDisposition) {
-                                const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/);
-                                if (filenameMatch) {
-                                    filename = filenameMatch[1];
+                        this.liveVersionsLoading = true;
+                        const response = await fetch('/api/devices/live-versions');
+                        const data = await response.json();
+                        if (data.versions) {
+                            this.devices.forEach(device => {
+                                if (data.versions[device.name] !== undefined) {
+                                    device.current_version = data.versions[device.name];
                                 }
-                            }
-
-                            // Firmware exists, trigger download as blob
-                            const blob = await response.blob();
-                            const blobUrl = window.URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.style.display = 'none';
-                            a.href = blobUrl;
-                            a.download = filename;
-                            document.body.appendChild(a);
-                            a.click();
-                            window.URL.revokeObjectURL(blobUrl);
-                            document.body.removeChild(a);
-                        } else if (response.status === 404) {
-                            // Firmware doesn't exist, compile first
-                            const data = await response.json();
-
-                            if (data.error && data.error.includes('not been compiled')) {
-                                const confirmed = confirm('⚙️ Device not compiled yet.\n\nCompile now? (will take 1-3 minutes)');
-                                if (confirmed) {
-                                    this.deviceModal.output = 'Starting compile for firmware download...\n\n';
-                                    this.deviceModal.loading = true;
-
-                                    // Wait for compile to complete using EventSource
-                                    await new Promise((resolve, reject) => {
-                                        const streamUrl = `/api/device/${device.instance}/${deviceName}/compile/stream`;
-                                        const eventSource = new EventSource(streamUrl);
-
-                                        eventSource.onmessage = (event) => {
-                                            const data = JSON.parse(event.data);
-
-                                            if (data.line) {
-                                                this.deviceModal.output += data.line + '\n';
-                                            } else if (data.done) {
-                                                eventSource.close();
-                                                this.deviceModal.loading = false;
-                                                if (data.success) {
-                                                    resolve(true);
-                                                } else {
-                                                    reject(new Error('Compile failed'));
-                                                }
-                                            } else if (data.error) {
-                                                this.deviceModal.output += `\n❌ Error: ${data.error}`;
-                                                eventSource.close();
-                                                this.deviceModal.loading = false;
-                                                reject(new Error(data.error));
-                                            }
-                                        };
-
-                                        eventSource.onerror = (error) => {
-                                            this.deviceModal.output += '\n❌ Connection error';
-                                            eventSource.close();
-                                            this.deviceModal.loading = false;
-                                            reject(new Error('Connection error'));
-                                        };
-                                    });
-
-                                    // After compile, verify firmware exists before downloading
-                                    this.deviceModal.output += '\n\n🔍 Verifying firmware file...\n';
-                                    const verifyResponse = await fetch(url);
-
-                                    if (verifyResponse.ok) {
-                                        if (confirm('✅ Compile complete!\n\nDownload firmware now?')) {
-                                            window.open(url, '_blank');
-                                        }
-                                    } else {
-                                        const verifyData = await verifyResponse.json();
-                                        alert('❌ Firmware not found after compile.\n\n' +
-                                              'This usually means:\n' +
-                                              '• Compile had errors (check output above)\n' +
-                                              '• Firmware is in an unexpected location\n\n' +
-                                              'Error: ' + (verifyData.error || 'Unknown'));
-                                    }
-                                }
-                            } else {
-                                alert('❌ ' + (data.error || 'Firmware not found'));
-                            }
-                        } else {
-                            alert('❌ Error downloading firmware');
+                            });
+                            console.log(`Live versions: ${data.found}/${data.queried} devices responded`);
                         }
                     } catch (error) {
-                        console.error('Download error:', error);
-                        alert('❌ Error: ' + error.message);
-                        this.deviceModal.loading = false;
+                        console.error('Error loading live versions:', error);
+                    } finally {
+                        this.liveVersionsLoading = false;
                     }
                 },
 
@@ -2354,25 +2311,17 @@
                     }
                 },
 
-                openNativeDashboard() {
-                    const device = this.deviceModal.device;
-                    if (!device) return;
+                openNativeDashboard(instanceSlug) {
+                    const slug = instanceSlug || this.deviceModal.device?.instance;
+                    if (!slug) return;
 
-                    // Get dashboard URL for this instance
-                    const dashboardUrls = {
-                        'production': 'https://codex.grid.foxrunn.net:6052',
-                        'lab': 'https://codex.grid.foxrunn.net:6054'
-                    };
-
-                    const baseUrl = dashboardUrls[device.instance];
-                    if (!baseUrl) {
-                        alert('No dashboard URL configured for this instance');
+                    const instance = this.instances.find(i => i.slug === slug);
+                    const url = instance?.dashboard_url;
+                    if (!url) {
+                        alert('No dashboard_url configured for this instance');
                         return;
                     }
-
-                    // Open base dashboard - SPA routing prevents deep linking
-                    alert(`Opening ${device.instance} ESPHome dashboard.\n\nFind device: ${device.name} (${device.config_file})`);
-                    window.open(baseUrl, `esphome-${device.instance}`, 'width=1400,height=900');
+                    window.open(url, `esphome-${slug}`, 'width=1400,height=900');
                 },
 
                 // ============================================================================

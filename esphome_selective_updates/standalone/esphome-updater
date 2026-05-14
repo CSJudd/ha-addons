@@ -137,7 +137,7 @@ def create_addon_environment(config: dict) -> dict:
         "clear_log_now": False,
         "clear_progress_on_start": False,
         "clear_progress_now": False,
-        "always_clear_log_on_version_change": False,
+        "clear_log_on_version_change": False,
     }
 
     options_file = data_dir / "options.json"

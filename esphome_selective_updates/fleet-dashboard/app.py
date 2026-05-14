@@ -369,6 +369,23 @@ def get_device_version(ip: str) -> Optional[str]:
     except Exception:
         return None
 
+def _compute_update_available(
+    deployed_version: Optional[str],
+    pinned_version: str,
+    instance_slug: str,
+    container_versions: Dict[str, str]
+) -> bool:
+    """Return True if the device's deployed firmware is behind its target version"""
+    if not deployed_version:
+        return False
+    if pinned_version and pinned_version != "*":
+        # Device is pinned to a specific ESPHome version
+        return deployed_version != pinned_version
+    # Device follows the running container
+    container_ver = container_versions.get(instance_slug)
+    return bool(container_ver and deployed_version != container_ver)
+
+
 def discover_devices(instance: Dict) -> List[Dict]:
     """Discover all ESPHome devices for an instance"""
     config_dir = Path(instance["config_dir"])
@@ -376,6 +393,8 @@ def discover_devices(instance: Dict) -> List[Dict]:
 
     if not config_dir.exists():
         return devices
+
+    container_versions = get_builder_current_versions()
 
     # First pass: collect all device info without pinging
     for yaml_file in sorted(config_dir.glob("*.yaml")):
@@ -452,7 +471,9 @@ def discover_devices(instance: Dict) -> List[Dict]:
                 "status": "unknown",
                 "deployed_version": deployed_version,
                 "current_version": None,
-                "update_available": False
+                "update_available": _compute_update_available(
+                    deployed_version, esphome_version, instance["slug"], container_versions
+                )
             })
 
         except Exception as e:
@@ -883,6 +904,8 @@ class StatsHandler(tornado.web.RequestHandler):
                     stats["online"] += 1
                 elif device["status"] == "offline":
                     stats["offline"] += 1
+                if device.get("update_available"):
+                    stats["updates_available"] += 1
 
         return self.write(stats)
 

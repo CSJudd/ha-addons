@@ -1101,10 +1101,12 @@ def _device_yaml_template(data: dict) -> str:
 
     if board in _ESP32_BOARDS or board.startswith("esp32"):
         platform_block = f"esp32:\n  board: {board}"
-        keepalive = "common/keepalive-esp32.yaml"
+        keepalive_active  = "common/keepalive-esp32.yaml"
+        keepalive_comment = "# keepalive: !include common/keepalive-esp8266.yaml  # ESP8266 / ESP8285\n# keepalive: !include common/keepalive-bk72xx.yaml   # BK72xx (Tuya CB2S, etc.)"
     else:
         platform_block = f"esp8266:\n  board: {board}\n  restore_from_flash: true"
-        keepalive = "common/keepalive-esp8266.yaml"
+        keepalive_active  = "common/keepalive-esp8266.yaml"
+        keepalive_comment = "# keepalive: !include common/keepalive-esp32.yaml    # ESP32 variants\n# keepalive: !include common/keepalive-bk72xx.yaml   # BK72xx (Tuya CB2S, etc.)"
 
     ip_line = f"\n  device_static_ip: {static_ip}" if static_ip else ""
 
@@ -1118,7 +1120,9 @@ def _device_yaml_template(data: dict) -> str:
 
 packages:
   common_settings: !include common/common-settings.yaml
-  keepalive: !include {keepalive}
+  # Keepalive selected based on board — switch if using a different platform:
+  keepalive: !include {keepalive_active}
+{keepalive_comment}
   common_buttons: !include common/common-buttons.yaml
   common_ota: !include common/common-ota.yaml
 
@@ -1539,6 +1543,63 @@ class CommonFileHandler(tornado.web.RequestHandler):
         self.write({"success": True, "message": f"Deleted {filename} (backup kept)"})
 
 
+def _sync_instance_to_compose(instance: Dict) -> Optional[str]:
+    """
+    Update container_name and config volume bind in docker-compose.yml for
+    the instance's compose service. Returns an error string or None on success.
+    """
+    compose_file = instance.get("compose_file")
+    service_name = instance.get("compose_service")
+    if not compose_file or not service_name:
+        return None  # No compose config — nothing to sync
+
+    path = Path(compose_file)
+    if not path.exists():
+        return f"Compose file not found: {compose_file}"
+
+    try:
+        compose = yaml.safe_load(path.read_text())
+    except Exception as e:
+        return f"Failed to parse {compose_file}: {e}"
+
+    services = compose.get("services") or {}
+    service = services.get(service_name)
+    if service is None:
+        return f"Service '{service_name}' not found in {compose_file}"
+
+    changed = False
+
+    # Sync container_name
+    new_container = instance.get("container")
+    if new_container and service.get("container_name") != new_container:
+        service["container_name"] = new_container
+        changed = True
+
+    # Sync config_dir volume bind (host:/config)
+    new_config_dir = instance.get("config_dir")
+    if new_config_dir and "volumes" in service:
+        updated = []
+        for vol in service["volumes"]:
+            if isinstance(vol, str) and vol.endswith(":/config"):
+                new_vol = f"{new_config_dir}:/config"
+                if vol != new_vol:
+                    changed = True
+                updated.append(new_vol)
+            else:
+                updated.append(vol)
+        service["volumes"] = updated
+
+    if not changed:
+        return None  # Nothing to write
+
+    # Backup original
+    backup = path.with_suffix(f".yml.bak.settings")
+    backup.write_text(path.read_text())
+
+    path.write_text(yaml.dump(compose, default_flow_style=False, sort_keys=False))
+    return None
+
+
 class ConfigHandler(tornado.web.RequestHandler):
     """Get/update dashboard configuration"""
     def get(self):
@@ -1549,7 +1610,9 @@ class ConfigHandler(tornado.web.RequestHandler):
                 "ping_workers": 100,
                 "compile_timeout": 300,
                 "upload_timeout": 300
-            })
+            }),
+            "database": {k: v for k, v in CONFIG.get("database", {}).items() if k != "password"},
+            "updater": CONFIG.get("updater", {})
         }
         self.write(safe_config)
 
@@ -1563,12 +1626,33 @@ class ConfigHandler(tornado.web.RequestHandler):
                 CONFIG["homeassistant"] = data["homeassistant"]
             if "settings" in data:
                 CONFIG["settings"] = data["settings"]
+            if "updater" in data:
+                CONFIG["updater"] = data["updater"]
+            # database.password is never sent from the frontend; preserve existing value
+            if "database" in data:
+                db = CONFIG.get("database", {})
+                db.update({k: v for k, v in data["database"].items() if k != "password"})
+                CONFIG["database"] = db
 
-            # Write to file
+            # Sync any instance changes to their compose files
+            compose_warnings = []
+            for instance in CONFIG.get("instances", []):
+                err = _sync_instance_to_compose(instance)
+                if err:
+                    compose_warnings.append(err)
+
+            # Invalidate device cache since instance config may have changed
+            _device_cache.clear()
+            _device_cache_time.clear()
+
+            # Write config.yaml
             with CONFIG_FILE.open('w') as f:
-                yaml.dump(CONFIG, f, default_flow_style=False)
+                yaml.dump(CONFIG, f, default_flow_style=False, sort_keys=False)
 
-            self.write({"success": True, "message": "Configuration updated"})
+            resp = {"success": True, "message": "Configuration saved"}
+            if compose_warnings:
+                resp["compose_warnings"] = compose_warnings
+            self.write(resp)
 
         except Exception as e:
             self.set_status(500)
@@ -1919,8 +2003,104 @@ class BulkOperationHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"error": str(e)})
 
+def _fetch_operation_progress(operation_id: int) -> Optional[Dict]:
+    """Synchronous DB query for operation progress (runs in executor)"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor(cursor_factory=RealDictCursor)
+
+        c.execute('''
+            SELECT id, operation_type, device_count, success_count, failure_count,
+                   started_at, completed_at, status
+            FROM fleet_manager.operations WHERE id = %s
+        ''', (operation_id,))
+        op = c.fetchone()
+        if not op:
+            conn.close()
+            return None
+
+        c.execute('''
+            SELECT device_name, instance, status, error_message, completed_at
+            FROM fleet_manager.operation_results
+            WHERE operation_id = %s ORDER BY completed_at DESC
+        ''', (operation_id,))
+        results = c.fetchall()
+        conn.close()
+
+        if op['started_at']:
+            op['started_at'] = op['started_at'].isoformat()
+        if op['completed_at']:
+            op['completed_at'] = op['completed_at'].isoformat()
+        for r in results:
+            if r['completed_at']:
+                r['completed_at'] = r['completed_at'].isoformat()
+
+        return {
+            "operation": dict(op),
+            "completed_count": len(results),
+            "in_progress_count": max(0, (op['device_count'] or 0) - len(results)),
+            "results": [dict(r) for r in results]
+        }
+    except Exception as e:
+        print(f"Error fetching operation {operation_id} progress: {e}")
+        return None
+
+
+class BulkProgressWebSocketHandler(BaseWebSocketHandler):
+    """WebSocket: server-side push for bulk operation progress (replaces client polling)"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._task = None
+
+    async def on_message(self, message):
+        try:
+            data = json.loads(message)
+            if data.get("type") == "subscribe":
+                operation_id = int(data["operation_id"])
+                if self._task:
+                    self._task.cancel()
+                self._task = asyncio.ensure_future(self._push_loop(operation_id))
+        except Exception as e:
+            await self.write_message(json.dumps({"type": "error", "data": str(e)}))
+
+    async def _push_loop(self, operation_id: int):
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                progress = await loop.run_in_executor(
+                    None, _fetch_operation_progress, operation_id
+                )
+                if progress is None:
+                    await self.write_message(json.dumps({"type": "error", "data": "Operation not found"}))
+                    break
+
+                await self.write_message(json.dumps({"type": "progress", **progress}))
+
+                if progress["operation"]["status"] != "running":
+                    await self.write_message(json.dumps({"type": "complete"}))
+                    break
+
+                await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            pass
+        except tornado.websocket.WebSocketClosedError:
+            pass
+        except Exception as e:
+            try:
+                await self.write_message(json.dumps({"type": "error", "data": str(e)}))
+            except Exception:
+                pass
+
+    def on_close(self):
+        if self._task:
+            self._task.cancel()
+        super().on_close()
+
+
 class OperationProgressHandler(tornado.web.RequestHandler):
-    """Get real-time progress of a running operation"""
+    """Get real-time progress of a running operation (REST fallback)"""
     def get(self, operation_id):
         try:
             conn = get_db_connection()
@@ -2219,6 +2399,7 @@ def make_app():
         (r"/ws/compile", CompileWebSocketHandler),
         (r"/ws/upload", UploadWebSocketHandler),
         (r"/ws/logs", LogsWebSocketHandler),
+        (r"/ws/bulk-progress", BulkProgressWebSocketHandler),
 
         # API endpoints
         (r"/api/instances", InstancesHandler),

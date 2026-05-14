@@ -784,9 +784,30 @@
                                            class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
                                 </div>
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Docker Container</label>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Docker Container Name</label>
                                     <input type="text"
                                            x-model="inst.container"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Compose File Path</label>
+                                    <input type="text"
+                                           x-model="inst.compose_file"
+                                           placeholder="/opt/data-services/docker-compose.yml"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Compose Service Name</label>
+                                    <input type="text"
+                                           x-model="inst.compose_service"
+                                           placeholder="esphome-production"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Dashboard URL</label>
+                                    <input type="text"
+                                           x-model="inst.dashboard_url"
+                                           placeholder="https://hostname:6052"
                                            class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
                                 </div>
                                 <div class="flex items-center justify-between">
@@ -1405,7 +1426,7 @@
                     failed: 0,
                     inProgress: 0,
                     results: [],
-                    pollInterval: null
+                    ws: null
                 },
                 latestESPHomeVersion: null,
                 currentBuilderVersions: {},
@@ -2171,8 +2192,11 @@
                         const result = await response.json();
 
                         if (result.success) {
-                            alert('✅ Settings saved successfully!');
-                            // Reload instances in case they changed
+                            let msg = '✅ Settings saved successfully!';
+                            if (result.compose_warnings && result.compose_warnings.length) {
+                                msg += '\n\n⚠️ Compose sync warnings:\n' + result.compose_warnings.join('\n');
+                            }
+                            alert(msg);
                             await this.loadInstances();
                         } else {
                             alert('❌ Error saving settings: ' + (result.error || 'Unknown error'));
@@ -2251,8 +2275,10 @@
                     this.settings.instances.push({
                         name: 'New Instance',
                         slug: 'new-instance',
-                        config_dir: '/path/to/config',
-                        container: 'esphome-container',
+                        config_dir: '/opt/data-services/esphome/new-instance',
+                        container: 'codex-esphome-new-instance',
+                        compose_file: '/opt/data-services/docker-compose.yml',
+                        compose_service: 'esphome-new-instance',
                         dashboard_url: 'https://localhost:6052',
                         enabled: true
                     });
@@ -2371,11 +2397,10 @@
                                 failed: 0,
                                 inProgress: deviceList.length,
                                 results: [],
-                                pollInterval: null
+                                ws: null
                             };
 
-                            // Start polling for progress
-                            this.pollBulkProgress();
+                            this.subscribeBulkProgress(data.operation_id);
                         } else {
                             alert('❌ Failed to start operation: ' + (data.error || 'Unknown error'));
                         }
@@ -2486,45 +2511,51 @@
                     }
                 },
 
-                async pollBulkProgress() {
-                    if (!this.bulkProgress.operationId) return;
+                subscribeBulkProgress(operationId) {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/bulk-progress`);
+                    this.bulkProgress.ws = ws;
 
-                    try {
-                        const response = await fetch(`/api/operations/${this.bulkProgress.operationId}/progress`);
-                        const data = await response.json();
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({type: 'subscribe', operation_id: operationId}));
+                    };
 
-                        this.bulkProgress.completed = data.completed_count;
-                        this.bulkProgress.inProgress = data.in_progress_count;
-                        this.bulkProgress.success = data.operation.success_count || 0;
-                        this.bulkProgress.failed = data.operation.failure_count || 0;
-                        this.bulkProgress.status = data.operation.status;
-                        this.bulkProgress.results = data.results || [];
-
-                        // Continue polling if still running
-                        if (data.operation.status === 'running') {
-                            this.bulkProgress.pollInterval = setTimeout(() => this.pollBulkProgress(), 2000);
-                        } else {
-                            // Operation complete
-                            console.log('✅ Bulk operation completed');
-                            // Auto-refresh device list to show updated info
+                    ws.onmessage = async (event) => {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'progress') {
+                            this.bulkProgress.completed = msg.completed_count;
+                            this.bulkProgress.inProgress = msg.in_progress_count;
+                            this.bulkProgress.success = msg.operation.success_count || 0;
+                            this.bulkProgress.failed = msg.operation.failure_count || 0;
+                            this.bulkProgress.status = msg.operation.status;
+                            this.bulkProgress.results = msg.results || [];
+                        } else if (msg.type === 'complete') {
+                            ws.close();
+                            this.bulkProgress.ws = null;
                             await this.refreshDevices();
+                        } else if (msg.type === 'error') {
+                            console.error('Bulk progress WS error:', msg.data);
+                            ws.close();
+                            this.bulkProgress.ws = null;
                         }
-                    } catch (error) {
-                        console.error('Error polling progress:', error);
-                        // Retry on error
-                        if (this.bulkProgress.status === 'running') {
-                            this.bulkProgress.pollInterval = setTimeout(() => this.pollBulkProgress(), 3000);
-                        }
-                    }
+                    };
+
+                    ws.onerror = () => {
+                        console.error('Bulk progress WebSocket error');
+                        this.bulkProgress.ws = null;
+                    };
+
+                    ws.onclose = () => {
+                        this.bulkProgress.ws = null;
+                    };
                 },
 
                 closeBulkProgress() {
-                    // Clear polling interval
-                    if (this.bulkProgress.pollInterval) {
-                        clearTimeout(this.bulkProgress.pollInterval);
+                    if (this.bulkProgress.ws) {
+                        this.bulkProgress.ws.close();
+                        this.bulkProgress.ws = null;
                     }
                     this.bulkProgress.show = false;
-                    // Clear selection
                     this.selectedDevices = [];
                 },
 

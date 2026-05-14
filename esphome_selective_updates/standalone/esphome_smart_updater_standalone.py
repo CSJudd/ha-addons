@@ -53,7 +53,7 @@ DEFAULTS = {
     "clear_progress_now": False,
     "clear_log_on_start": False,
     "clear_progress_on_start": False,
-    "always_clear_log_on_version_change": True,
+    "clear_log_on_version_change": True,
 }
 
 # ============================================================================
@@ -200,7 +200,7 @@ def ping_host(host: str) -> bool:
             if rc == 0:
                 return True
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            return True
+            return False
         except Exception:
             pass
     return False
@@ -656,7 +656,7 @@ def perform_housekeeping(opts: Dict, state: Dict, progress: Dict) -> Dict:
     addon_version = os.environ.get("ADDON_VERSION", "unknown")
     
     # Version change detection
-    if opts.get("always_clear_log_on_version_change", True):
+    if opts.get("clear_log_on_version_change", True):
         if addon_version and addon_version != state.get("last_version"):
             truncate_file(LOG_FILE)
             log(f"Add-on version changed: {state.get('last_version')} → {addon_version}")

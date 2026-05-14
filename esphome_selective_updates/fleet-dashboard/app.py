@@ -17,6 +17,7 @@ Author: Chris Judd
 License: MIT
 """
 
+import re
 import tornado.web
 import tornado.ioloop
 import tornado.websocket
@@ -222,6 +223,22 @@ def init_db():
 _ha_status_cache = {}
 _ha_status_cache_time = 0
 
+# Per-instance device list cache (30-second TTL)
+_device_cache: Dict[str, List[Dict]] = {}
+_device_cache_time: Dict[str, float] = {}
+DEVICE_CACHE_TTL = 30
+
+def discover_devices_cached(instance: Dict) -> List[Dict]:
+    """Cached wrapper for discover_devices — re-reads YAMLs at most every 30s"""
+    slug = instance["slug"]
+    now = time.time()
+    if slug in _device_cache and now - _device_cache_time.get(slug, 0) < DEVICE_CACHE_TTL:
+        return _device_cache[slug]
+    devices = discover_devices(instance)
+    _device_cache[slug] = devices
+    _device_cache_time[slug] = now
+    return devices
+
 # Global cache for ESPHome latest version
 _esphome_latest_version = None
 _esphome_version_cache_time = 0
@@ -236,8 +253,12 @@ def get_ha_device_status() -> Dict[str, str]:
 
     try:
         # Query HA for all ESPHome connection status sensors
-        ha_url = "https://haos.grid.foxrunn.net:8123/api/states"
-        ha_token = os.environ.get("HA_TOKEN", "")
+        ha_cfg = CONFIG.get("homeassistant", {})
+        ha_base_url = ha_cfg.get("url", "").rstrip("/")
+        ha_token = ha_cfg.get("token", "") or os.environ.get("HA_TOKEN", "")
+        if not ha_base_url or not ha_token:
+            return {}
+        ha_url = f"{ha_base_url}/api/states"
 
         headers = {
             "Authorization": f"Bearer {ha_token}",
@@ -794,7 +815,7 @@ class DevicesHandler(tornado.web.RequestHandler):
             if instance_filter and instance["slug"] != instance_filter:
                 continue
 
-            devices = discover_devices(instance)
+            devices = discover_devices_cached(instance)
             all_devices.extend(devices)
 
         # Apply filters
@@ -827,7 +848,7 @@ class DeviceTypesHandler(tornado.web.RequestHandler):
         for instance in CONFIG["instances"]:
             if not instance.get("enabled"):
                 continue
-            devices = discover_devices(instance)
+            devices = discover_devices_cached(instance)
             types.update(d["device_type"] for d in devices)
 
         self.write({"types": sorted(list(types))})
@@ -848,7 +869,7 @@ class StatsHandler(tornado.web.RequestHandler):
             if not instance.get("enabled"):
                 continue
 
-            devices = discover_devices(instance)
+            devices = discover_devices_cached(instance)
             instance_count = len(devices)
 
             stats["total_devices"] += instance_count
@@ -1732,7 +1753,7 @@ class ESPHomeVersionHandler(tornado.web.RequestHandler):
             self.write({"error": str(e)})
 
 class UpdateBuilderHandler(tornado.web.RequestHandler):
-    """Update ESPHome builder container to a new version"""
+    """Update ESPHome builder container to a new version via docker-compose"""
     def post(self):
         try:
             data = json.loads(self.request.body)
@@ -1748,70 +1769,65 @@ class UpdateBuilderHandler(tornado.web.RequestHandler):
                 self.set_status(404)
                 return self.write({"error": f"Instance {instance_slug} not found"})
 
-            container_name = instance["container"]
+            compose_file = instance.get("compose_file")
+            compose_service = instance.get("compose_service")
 
-            # Get current container config
-            inspect_cmd = ["docker", "inspect", container_name, "--format={{json .HostConfig}}"]
-            result = subprocess.run(inspect_cmd, capture_output=True, text=True, timeout=10)
+            if not compose_file or not compose_service:
+                self.set_status(400)
+                return self.write({"error": "Instance missing compose_file / compose_service in config"})
 
-            if result.returncode != 0:
+            compose_path = Path(compose_file)
+            if not compose_path.exists():
                 self.set_status(500)
-                return self.write({"error": f"Failed to inspect container: {result.stderr}"})
+                return self.write({"error": f"docker-compose.yml not found: {compose_file}"})
 
-            config = json.loads(result.stdout)
+            # Update image version in docker-compose.yml
+            compose_text = compose_path.read_text()
+            image_prefix = "ghcr.io/esphome/esphome:"
+            # Replace the specific service's image line
+            updated = re.sub(
+                rf"(image:\s*{re.escape(image_prefix)})[^\s]+",
+                rf"\g<1>{target_version}",
+                compose_text
+            )
+            if updated == compose_text:
+                self.set_status(400)
+                return self.write({"error": f"Could not find '{image_prefix}' in {compose_file}"})
+
+            # Backup then write
+            backup_path = compose_path.with_suffix(".yml.bak")
+            backup_path.write_text(compose_text)
+            compose_path.write_text(updated)
 
             # Pull new image
-            image = f"ghcr.io/esphome/esphome:{target_version}"
-            print(f"Pulling {image}...")
+            print(f"Pulling esphome:{target_version} for {compose_service}...")
             pull_result = subprocess.run(
-                ["docker", "pull", image],
-                capture_output=True,
-                text=True,
-                timeout=300
+                ["docker", "compose", "-f", compose_file, "pull", compose_service],
+                capture_output=True, text=True, timeout=300
             )
-
             if pull_result.returncode != 0:
+                # Restore backup on failure
+                backup_path.rename(compose_path)
                 self.set_status(500)
-                return self.write({"error": f"Failed to pull image: {pull_result.stderr}"})
+                return self.write({"error": f"docker compose pull failed: {pull_result.stderr}"})
 
-            # Stop and remove old container
-            print(f"Stopping {container_name}...")
-            subprocess.run(["docker", "stop", container_name], timeout=30)
-            subprocess.run(["docker", "rm", container_name], timeout=10)
-
-            # Recreate container with new image
-            binds = config.get("Binds", [])
-            port_bindings = config.get("PortBindings", {})
-            restart_policy = config.get("RestartPolicy", {}).get("Name", "unless-stopped")
-
-            cmd = ["docker", "run", "-d", "--name", container_name]
-            cmd.extend(["--restart", restart_policy])
-
-            for bind in binds:
-                cmd.extend(["-v", bind])
-
-            for container_port, host_bindings in port_bindings.items():
-                for binding in host_bindings:
-                    host_port = binding.get("HostPort")
-                    if host_port:
-                        # ESPHome dashboard always listens on 6052 internally
-                        cmd.extend(["-p", f"{host_port}:6052"])
-
-            cmd.append(image)
-            cmd.extend(["dashboard", "/config"])
-
-            print(f"Creating new container: {' '.join(cmd)}")
-            create_result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-            if create_result.returncode != 0:
+            # Recreate container from updated compose file
+            print(f"Restarting {compose_service}...")
+            up_result = subprocess.run(
+                ["docker", "compose", "-f", compose_file, "up", "-d", "--no-deps", compose_service],
+                capture_output=True, text=True, timeout=60
+            )
+            if up_result.returncode != 0:
                 self.set_status(500)
-                return self.write({"error": f"Failed to create container: {create_result.stderr}"})
+                return self.write({"error": f"docker compose up failed: {up_result.stderr}"})
+
+            backup_path.unlink(missing_ok=True)
 
             self.write({
                 "success": True,
                 "instance": instance_slug,
                 "version": target_version,
-                "message": f"Updated {container_name} to {target_version}"
+                "message": f"Updated {compose_service} to {target_version}"
             })
 
         except Exception as e:

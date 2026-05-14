@@ -5,6 +5,8 @@ instances:
     slug: "production"
     config_dir: "/opt/data-services/esphome/production"
     container: "codex-esphome-production"
+    compose_file: "/opt/data-services/docker-compose.yml"
+    compose_service: "esphome-production"
     dashboard_url: "https://codex.grid.foxrunn.net:6052"
     enabled: true
 
@@ -12,6 +14,8 @@ instances:
     slug: "lab"
     config_dir: "/opt/data-services/esphome/lab"
     container: "codex-esphome-lab"
+    compose_file: "/opt/data-services/docker-compose.yml"
+    compose_service: "esphome-lab"
     dashboard_url: "https://codex.grid.foxrunn.net:6054"
     enabled: true
 

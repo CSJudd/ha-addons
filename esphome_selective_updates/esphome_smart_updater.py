@@ -47,7 +47,7 @@ DEFAULTS = {
     "clear_progress_now": False,
     "clear_log_on_start": False,
     "clear_progress_on_start": False,
-    "always_clear_log_on_version_change": True,
+    "clear_log_on_version_change": True,
 }
 
 # ============================================================================
@@ -194,7 +194,7 @@ def ping_host(host: str) -> bool:
             if rc == 0:
                 return True
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            return True
+            return False
         except Exception:
             pass
     return False
@@ -471,14 +471,18 @@ def ota_upload_via_esphome(
     """
     args = ["esphome", "upload", f"/config/esphome/{yaml_name}", "--device", target]
     rc, out = docker_exec(container, args, capture=True)
-    
-    success = (
-        rc == 0 or
-        "OTA successful" in out or
-        "Successfully uploaded program" in out
-    )
-    
-    return (success, out)
+
+    if rc == 0:
+        return (True, out)
+
+    # ESPHome occasionally exits non-zero even after a successful OTA push.
+    # Accept known success strings as a fallback, but warn so it's visible.
+    ota_success_strings = ("OTA successful", "Successfully uploaded program")
+    if any(s in out for s in ota_success_strings):
+        log(f"Warning: esphome exited {rc} but output contains a success string; treating as success")
+        return (True, out)
+
+    return (False, out)
 
 # ============================================================================
 # SAFETY CHECKS
@@ -644,7 +648,7 @@ def perform_housekeeping(opts: Dict, state: Dict, progress: Dict) -> Dict:
     addon_version = os.environ.get("ADDON_VERSION", "unknown")
     
     # Version change detection
-    if opts.get("always_clear_log_on_version_change", True):
+    if opts.get("clear_log_on_version_change", True):
         if addon_version and addon_version != state.get("last_version"):
             truncate_file(LOG_FILE)
             log(f"Add-on version changed: {state.get('last_version')} → {addon_version}")

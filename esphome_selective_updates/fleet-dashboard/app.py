@@ -20,6 +20,8 @@ License: MIT
 import re
 import sys
 import tempfile
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 import tornado.web
 import tornado.ioloop
 import tornado.websocket
@@ -211,6 +213,42 @@ def init_db():
             success_count INTEGER,
             failed_count INTEGER,
             config_json TEXT
+        )
+    ''')
+
+    # Compile/upload log retention table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS fleet_manager.compile_logs (
+            id SERIAL PRIMARY KEY,
+            device_name TEXT NOT NULL,
+            instance TEXT NOT NULL,
+            operation_type TEXT NOT NULL,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            exit_code INTEGER,
+            output TEXT,
+            duration_seconds INTEGER
+        )
+    ''')
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS compile_logs_device_idx
+        ON fleet_manager.compile_logs (instance, device_name, started_at DESC)
+    ''')
+
+    # Scheduled jobs table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS fleet_manager.scheduled_jobs (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            cron TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            instance TEXT,
+            config_json TEXT,
+            enabled BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_run TIMESTAMP,
+            last_status TEXT,
+            next_run TIMESTAMP
         )
     ''')
 
@@ -534,6 +572,51 @@ class BaseWebSocketHandler(tornado.websocket.WebSocketHandler):
         print(f"WebSocket closed: {self.__class__.__name__}")
 
 # ============================================================================
+# COMPILE LOG PERSISTENCE
+# ============================================================================
+
+COMPILE_LOG_MAX_BYTES = 256 * 1024  # 256 KB max stored per entry
+
+def _store_compile_log(
+    device_name: str,
+    instance: str,
+    operation_type: str,
+    started_at: datetime,
+    exit_code: int,
+    output: str,
+    keep_last: int = 10
+):
+    """Persist compile/upload output to DB; prune to keep_last entries per device."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        duration = int((datetime.now() - started_at).total_seconds())
+        truncated = output[-COMPILE_LOG_MAX_BYTES:] if len(output) > COMPILE_LOG_MAX_BYTES else output
+        c.execute('''
+            INSERT INTO fleet_manager.compile_logs
+            (device_name, instance, operation_type, started_at, completed_at, exit_code, output, duration_seconds)
+            VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s)
+        ''', (device_name, instance, operation_type, started_at, exit_code, truncated, duration))
+
+        # Prune older entries for this device beyond keep_last
+        c.execute('''
+            DELETE FROM fleet_manager.compile_logs
+            WHERE instance = %s AND device_name = %s
+              AND id NOT IN (
+                SELECT id FROM fleet_manager.compile_logs
+                WHERE instance = %s AND device_name = %s
+                ORDER BY started_at DESC
+                LIMIT %s
+              )
+        ''', (instance, device_name, instance, device_name, keep_last))
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: failed to store compile log for {device_name}: {e}")
+
+
+# ============================================================================
 # COMPILE WEBSOCKET HANDLER
 # ============================================================================
 
@@ -543,6 +626,10 @@ class CompileWebSocketHandler(BaseWebSocketHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._proc = None
+        self._instance: Optional[str] = None
+        self._device_name: Optional[str] = None
+        self._started_at: Optional[datetime] = None
+        self._output_buf: list = []
 
     async def on_message(self, message):
         """Handle incoming WebSocket messages"""
@@ -571,6 +658,10 @@ class CompileWebSocketHandler(BaseWebSocketHandler):
         try:
             instance = data.get("instance")
             device_name = data.get("device")
+            self._instance = instance
+            self._device_name = device_name
+            self._started_at = datetime.now()
+            self._output_buf = []
 
             if not instance or not device_name:
                 await self.write_message(json.dumps({
@@ -627,48 +718,48 @@ class CompileWebSocketHandler(BaseWebSocketHandler):
 
     @tornado.gen.coroutine
     def _stream_output(self):
-        """Stream subprocess output to WebSocket"""
+        """Stream subprocess output to WebSocket, buffering for log persistence"""
         try:
             while True:
                 try:
-                    # Read until newline or carriage return
                     line = yield self._proc.stdout.read_until_regex(b"[\n\r]")
                     text = line.decode("utf-8", "replace").rstrip()
-
-                    self.write_message(json.dumps({
-                        "type": "line",
-                        "data": text
-                    }))
+                    self._output_buf.append(text)
+                    self.write_message(json.dumps({"type": "line", "data": text}))
                 except tornado.iostream.StreamClosedError:
                     break
                 except Exception as e:
                     print(f"Error reading stdout: {e}")
                     break
 
-            # Wait for process to exit
             yield self._proc.wait_for_exit(raise_error=False)
+            rc = self._proc.returncode
 
-            # Send completion message
-            self.write_message(json.dumps({
-                "type": "exit",
-                "code": self._proc.returncode
-            }))
+            # Persist log to DB
+            if self._device_name and self._instance and self._started_at:
+                _store_compile_log(
+                    self._device_name, self._instance, "compile",
+                    self._started_at, rc, "\n".join(self._output_buf)
+                )
+
+            self.write_message(json.dumps({"type": "exit", "code": rc}))
 
         except tornado.websocket.WebSocketClosedError:
-            # Client disconnected, kill process
             if self._proc and self._proc.returncode is None:
                 self._proc.proc.kill()
+            # Still persist even if client disconnected
+            if self._device_name and self._instance and self._started_at and self._output_buf:
+                _store_compile_log(
+                    self._device_name, self._instance, "compile",
+                    self._started_at, -1, "\n".join(self._output_buf)
+                )
         except Exception as e:
             try:
-                self.write_message(json.dumps({
-                    "type": "error",
-                    "data": str(e)
-                }))
-            except:
+                self.write_message(json.dumps({"type": "error", "data": str(e)}))
+            except Exception:
                 pass
 
     def on_close(self):
-        """Clean up when WebSocket closes"""
         if self._proc and self._proc.returncode is None:
             self._proc.proc.kill()
         super().on_close()
@@ -683,6 +774,10 @@ class UploadWebSocketHandler(BaseWebSocketHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._proc = None
+        self._instance: Optional[str] = None
+        self._device_name: Optional[str] = None
+        self._started_at: Optional[datetime] = None
+        self._output_buf: list = []
 
     async def on_message(self, message):
         """Handle incoming WebSocket messages"""
@@ -711,6 +806,10 @@ class UploadWebSocketHandler(BaseWebSocketHandler):
         try:
             instance = data.get("instance")
             device_name = data.get("device")
+            self._instance = instance
+            self._device_name = device_name
+            self._started_at = datetime.now()
+            self._output_buf = []
 
             if not instance or not device_name:
                 await self.write_message(json.dumps({
@@ -767,48 +866,46 @@ class UploadWebSocketHandler(BaseWebSocketHandler):
 
     @tornado.gen.coroutine
     def _stream_output(self):
-        """Stream subprocess output to WebSocket"""
+        """Stream subprocess output to WebSocket, buffering for log persistence"""
         try:
             while True:
                 try:
-                    # Read until newline or carriage return
                     line = yield self._proc.stdout.read_until_regex(b"[\n\r]")
                     text = line.decode("utf-8", "replace").rstrip()
-
-                    self.write_message(json.dumps({
-                        "type": "line",
-                        "data": text
-                    }))
+                    self._output_buf.append(text)
+                    self.write_message(json.dumps({"type": "line", "data": text}))
                 except tornado.iostream.StreamClosedError:
                     break
                 except Exception as e:
                     print(f"Error reading stdout: {e}")
                     break
 
-            # Wait for process to exit
             yield self._proc.wait_for_exit(raise_error=False)
+            rc = self._proc.returncode
 
-            # Send completion message
-            self.write_message(json.dumps({
-                "type": "exit",
-                "code": self._proc.returncode
-            }))
+            if self._device_name and self._instance and self._started_at:
+                _store_compile_log(
+                    self._device_name, self._instance, "upload",
+                    self._started_at, rc, "\n".join(self._output_buf)
+                )
+
+            self.write_message(json.dumps({"type": "exit", "code": rc}))
 
         except tornado.websocket.WebSocketClosedError:
-            # Client disconnected, kill process
             if self._proc and self._proc.returncode is None:
                 self._proc.proc.kill()
+            if self._device_name and self._instance and self._started_at and self._output_buf:
+                _store_compile_log(
+                    self._device_name, self._instance, "upload",
+                    self._started_at, -1, "\n".join(self._output_buf)
+                )
         except Exception as e:
             try:
-                self.write_message(json.dumps({
-                    "type": "error",
-                    "data": str(e)
-                }))
-            except:
+                self.write_message(json.dumps({"type": "error", "data": str(e)}))
+            except Exception:
                 pass
 
     def on_close(self):
-        """Clean up when WebSocket closes"""
         if self._proc and self._proc.returncode is None:
             self._proc.proc.kill()
         super().on_close()
@@ -1035,6 +1132,284 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
         if self._tmp_config:
             Path(self._tmp_config).unlink(missing_ok=True)
         super().on_close()
+
+
+# ============================================================================
+# SCHEDULER
+# ============================================================================
+
+_scheduler = BackgroundScheduler(timezone="UTC")
+
+SCHEDULED_OPERATIONS = {
+    "smart-ota":          "Smart OTA update via standalone updater",
+    "recompile-all":      "Recompile all device firmwares",
+    "substitution-check": "Check all devices for substitution compliance",
+    "health-check":       "Refresh live device versions and online status",
+}
+
+
+def _run_scheduled_job(job_id: int):
+    """Execute a scheduled job and update last_run / last_status in DB."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT name, operation, instance, config_json FROM fleet_manager.scheduled_jobs WHERE id = %s",
+            (job_id,)
+        )
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return
+        name, operation, instance_slug, config_json_str = row
+        job_cfg = json.loads(config_json_str or "{}")
+        conn.close()
+    except Exception as e:
+        print(f"Scheduler: failed to load job {job_id}: {e}")
+        return
+
+    print(f"Scheduler: running job {job_id} '{name}' ({operation}) on {instance_slug}")
+    status = "success"
+    try:
+        if operation == "substitution-check":
+            # Fire-and-forget: just log that the check ran
+            status = "success"
+
+        elif operation == "health-check":
+            # Invalidate device cache to force refresh on next load
+            _device_cache.clear()
+            _device_cache_time.clear()
+            status = "success"
+
+        elif operation in ("smart-ota", "recompile-all"):
+            instance_config = get_instance_config(instance_slug)
+            if not instance_config:
+                raise ValueError(f"Instance {instance_slug} not found")
+
+            updater_cfg = CONFIG.get("updater", {})
+            script_path = updater_cfg.get("script_path")
+            if not script_path or not Path(script_path).exists():
+                raise FileNotFoundError(f"Updater script not found: {script_path}")
+
+            dry_run = job_cfg.get("dry_run", False)
+            tmp_config = _build_standalone_config(instance_config, [], dry_run)
+            try:
+                result = subprocess.run(
+                    [sys.executable, script_path, "--config", tmp_config],
+                    capture_output=True, text=True, timeout=3600
+                )
+                status = "success" if result.returncode == 0 else "failed"
+            finally:
+                Path(tmp_config).unlink(missing_ok=True)
+
+    except Exception as e:
+        print(f"Scheduler: job {job_id} '{name}' failed: {e}")
+        status = "error"
+
+    # Update last_run and last_status
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE fleet_manager.scheduled_jobs
+            SET last_run = NOW(), last_status = %s
+            WHERE id = %s
+        ''', (status, job_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Scheduler: failed to update job {job_id} status: {e}")
+
+
+def _load_jobs_into_scheduler():
+    """Load all enabled jobs from DB into APScheduler."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, cron FROM fleet_manager.scheduled_jobs WHERE enabled = TRUE")
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"Scheduler: failed to load jobs: {e}")
+        return
+
+    for job_id, cron in rows:
+        aps_id = f"job_{job_id}"
+        if not _scheduler.get_job(aps_id):
+            try:
+                _scheduler.add_job(
+                    _run_scheduled_job,
+                    CronTrigger.from_crontab(cron, timezone="UTC"),
+                    args=[job_id],
+                    id=aps_id,
+                    replace_existing=True
+                )
+            except Exception as e:
+                print(f"Scheduler: failed to add job {job_id}: {e}")
+
+
+class ScheduledJobsHandler(tornado.web.RequestHandler):
+    """CRUD for scheduled jobs"""
+
+    def get(self):
+        try:
+            conn = get_db_connection()
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute('''
+                SELECT id, name, cron, operation, instance, config_json,
+                       enabled, created_at, last_run, last_status, next_run
+                FROM fleet_manager.scheduled_jobs
+                ORDER BY created_at DESC
+            ''')
+            jobs = c.fetchall()
+            conn.close()
+            for j in jobs:
+                for ts_field in ('created_at', 'last_run', 'next_run'):
+                    if j[ts_field]:
+                        j[ts_field] = j[ts_field].isoformat()
+            self.write({
+                "jobs": [dict(j) for j in jobs],
+                "available_operations": SCHEDULED_OPERATIONS
+            })
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+    def post(self):
+        try:
+            data = json.loads(self.request.body)
+            name = data.get("name", "").strip()
+            cron = data.get("cron", "").strip()
+            operation = data.get("operation", "")
+            instance = data.get("instance", "")
+
+            if not name or not cron or not operation:
+                self.set_status(400)
+                return self.write({"error": "name, cron, and operation are required"})
+
+            if operation not in SCHEDULED_OPERATIONS:
+                self.set_status(400)
+                return self.write({"error": f"Unknown operation: {operation}"})
+
+            # Validate cron syntax
+            try:
+                CronTrigger.from_crontab(cron, timezone="UTC")
+            except Exception as e:
+                self.set_status(400)
+                return self.write({"error": f"Invalid cron expression: {e}"})
+
+            config_json = json.dumps(data.get("config", {}))
+
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO fleet_manager.scheduled_jobs
+                (name, cron, operation, instance, config_json, enabled)
+                VALUES (%s, %s, %s, %s, %s, TRUE)
+                RETURNING id
+            ''', (name, cron, operation, instance, config_json))
+            job_id = c.fetchone()[0]
+            conn.commit()
+            conn.close()
+
+            # Register in scheduler immediately
+            aps_id = f"job_{job_id}"
+            _scheduler.add_job(
+                _run_scheduled_job,
+                CronTrigger.from_crontab(cron, timezone="UTC"),
+                args=[job_id],
+                id=aps_id,
+                replace_existing=True
+            )
+
+            self.write({"success": True, "id": job_id})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+
+class ScheduledJobHandler(tornado.web.RequestHandler):
+    """Update or delete a single scheduled job"""
+
+    def put(self, job_id):
+        try:
+            data = json.loads(self.request.body)
+            job_id = int(job_id)
+
+            conn = get_db_connection()
+            c = conn.cursor()
+
+            updates, params = [], []
+            for field in ("name", "cron", "operation", "instance"):
+                if field in data:
+                    updates.append(f"{field} = %s")
+                    params.append(data[field])
+            if "enabled" in data:
+                updates.append("enabled = %s")
+                params.append(bool(data["enabled"]))
+            if "config" in data:
+                updates.append("config_json = %s")
+                params.append(json.dumps(data["config"]))
+
+            if not updates:
+                self.set_status(400)
+                return self.write({"error": "No fields to update"})
+
+            params.append(job_id)
+            c.execute(f"UPDATE fleet_manager.scheduled_jobs SET {', '.join(updates)} WHERE id = %s", params)
+            conn.commit()
+            conn.close()
+
+            # Re-register in scheduler if cron/enabled changed
+            aps_id = f"job_{job_id}"
+            _scheduler.remove_job(aps_id, jobstore=None)
+            if data.get("enabled", True):
+                new_cron = data.get("cron") or c.fetchone()
+                if new_cron:
+                    try:
+                        _scheduler.add_job(
+                            _run_scheduled_job,
+                            CronTrigger.from_crontab(str(new_cron), timezone="UTC"),
+                            args=[job_id], id=aps_id, replace_existing=True
+                        )
+                    except Exception:
+                        pass
+
+            self.write({"success": True})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+    def delete(self, job_id):
+        try:
+            job_id = int(job_id)
+            aps_id = f"job_{job_id}"
+            try:
+                _scheduler.remove_job(aps_id)
+            except Exception:
+                pass
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM fleet_manager.scheduled_jobs WHERE id = %s", (job_id,))
+            conn.commit()
+            conn.close()
+            self.write({"success": True})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+
+class RunJobNowHandler(tornado.web.RequestHandler):
+    """Trigger a scheduled job immediately (outside its cron schedule)"""
+    def post(self, job_id):
+        try:
+            job_id = int(job_id)
+            t = threading.Thread(target=_run_scheduled_job, args=(job_id,), daemon=True)
+            t.start()
+            self.write({"success": True, "message": f"Job {job_id} triggered"})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
 
 
 # ============================================================================
@@ -1523,6 +1898,72 @@ class DeviceLogsHandler(tornado.web.RequestHandler):
             self.set_status(500)
             self.write({"error": str(e)})
 
+class DeviceCompileHistoryHandler(tornado.web.RequestHandler):
+    """Return the last N compile/upload log entries for a device"""
+    def get(self, instance_slug, device_name):
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            self.set_status(404)
+            return self.write({"error": "Instance not found"})
+
+        try:
+            limit = min(int(self.get_argument("limit", 10)), 50)
+            conn = get_db_connection()
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute('''
+                SELECT id, operation_type, started_at, completed_at,
+                       exit_code, duration_seconds,
+                       LEFT(output, 4000) AS output_preview
+                FROM fleet_manager.compile_logs
+                WHERE instance = %s AND device_name = %s
+                ORDER BY started_at DESC
+                LIMIT %s
+            ''', (instance_slug, device_name, limit))
+            rows = c.fetchall()
+            conn.close()
+
+            for row in rows:
+                if row['started_at']:
+                    row['started_at'] = row['started_at'].isoformat()
+                if row['completed_at']:
+                    row['completed_at'] = row['completed_at'].isoformat()
+
+            self.write({"logs": [dict(r) for r in rows]})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+
+class DeviceCompileLogDetailHandler(tornado.web.RequestHandler):
+    """Return full output for a single compile log entry"""
+    def get(self, log_id):
+        try:
+            conn = get_db_connection()
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute('''
+                SELECT id, device_name, instance, operation_type,
+                       started_at, completed_at, exit_code, output, duration_seconds
+                FROM fleet_manager.compile_logs WHERE id = %s
+            ''', (int(log_id),))
+            row = c.fetchone()
+            conn.close()
+
+            if not row:
+                self.set_status(404)
+                return self.write({"error": "Log entry not found"})
+
+            row = dict(row)
+            if row['started_at']:
+                row['started_at'] = row['started_at'].isoformat()
+            if row['completed_at']:
+                row['completed_at'] = row['completed_at'].isoformat()
+
+            self.write(row)
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+
 class DeviceFirmwareHandler(tornado.web.RequestHandler):
     """Download compiled firmware binary for UART flashing"""
     def get(self, instance, device_name):
@@ -1601,6 +2042,43 @@ class DeviceFirmwareHandler(tornado.web.RequestHandler):
         except Exception as e:
             self.set_status(500)
             self.write({"error": str(e)})
+
+class PackageDepsHandler(tornado.web.RequestHandler):
+    """
+    Return a map of common-file → [device_names] showing which devices
+    include each common/ package. Scans all device YAML files for
+    !include common/* references.
+    """
+    def get(self, instance_slug):
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            self.set_status(404)
+            return self.write({"error": "Instance not found"})
+
+        config_dir = Path(instance_config["config_dir"])
+        if not config_dir.exists():
+            return self.write({"deps": {}})
+
+        # Pattern: !include common/something.yaml
+        include_re = re.compile(r'!include\s+(common/[^\s\'"]+\.yaml)', re.IGNORECASE)
+        deps: Dict[str, List[str]] = {}
+
+        for yaml_file in sorted(config_dir.glob("*.yaml")):
+            try:
+                text = yaml_file.read_text(encoding="utf-8", errors="replace")
+                includes = set(include_re.findall(text))
+                for inc in includes:
+                    common_name = inc.split("/", 1)[1]  # strip "common/" prefix
+                    deps.setdefault(common_name, []).append(yaml_file.stem)
+            except Exception:
+                continue
+
+        # Sort device lists for stable output
+        for k in deps:
+            deps[k].sort()
+
+        self.write({"deps": deps, "instance": instance_slug})
+
 
 class CommonFilesHandler(tornado.web.RequestHandler):
     """List common/shared YAML files for an ESPHome instance"""
@@ -2196,6 +2674,261 @@ def _fetch_operation_progress(operation_id: int) -> Optional[Dict]:
         return None
 
 
+# ============================================================================
+# CANARY / STAGED ROLLOUT CAMPAIGNS
+# ============================================================================
+
+def _discover_canary_devices(instance_config: Dict) -> List[str]:
+    """Return device names (yaml stems) that have substitutions.canary == 'true'"""
+    config_dir = Path(instance_config["config_dir"])
+    canaries = []
+    for yaml_file in sorted(config_dir.glob("*.yaml")):
+        try:
+            cfg = yaml.safe_load(yaml_file.read_text())
+            subs = (cfg or {}).get("substitutions", {})
+            if str(subs.get("canary", "")).lower() in ("true", "yes", "1"):
+                canaries.append(yaml_file.stem)
+        except Exception:
+            continue
+    return canaries
+
+
+def _build_campaign_phases(
+    all_devices: List[str],
+    canary_devices: List[str],
+    batch_pct: int
+) -> List[Dict]:
+    """
+    Build an ordered list of phases.
+    Phase 0: canary group.
+    Remaining phases: slices of (all - canary) at batch_pct % each.
+    """
+    non_canary = [d for d in all_devices if d not in canary_devices]
+    phases = []
+    if canary_devices:
+        phases.append({"name": "Canary", "devices": canary_devices, "status": "pending"})
+    batch_size = max(1, int(len(non_canary) * batch_pct / 100))
+    for i in range(0, len(non_canary), batch_size):
+        batch = non_canary[i:i + batch_size]
+        phases.append({
+            "name": f"Batch {len(phases) + (0 if canary_devices else 1)}",
+            "devices": batch,
+            "status": "pending"
+        })
+    return phases
+
+
+def _run_campaign_phase(
+    campaign_id: int,
+    phase_idx: int,
+    phase: Dict,
+    instance_config: Dict,
+    fail_threshold: float,
+    dry_run: bool,
+    progress_cb
+) -> bool:
+    """
+    Run one phase of a campaign. Returns True if success rate >= fail_threshold.
+    progress_cb(msg) is called with status lines for the WebSocket.
+    """
+    devices = phase["devices"]
+    progress_cb(f"=== Phase: {phase['name']} — {len(devices)} devices ===")
+
+    updater_cfg = CONFIG.get("updater", {})
+    script_path = updater_cfg.get("script_path")
+    if not script_path or not Path(script_path).exists():
+        progress_cb(f"ERROR: updater script not found at {script_path}")
+        return False
+
+    tmp_config = _build_standalone_config(instance_config, devices, dry_run)
+    success_count = 0
+    try:
+        result = subprocess.run(
+            [sys.executable, script_path, "--config", tmp_config],
+            capture_output=True, text=True, timeout=3600
+        )
+        for line in result.stdout.splitlines():
+            progress_cb(line)
+        if result.returncode == 0:
+            success_count = len(devices)
+        else:
+            # Try to parse done count from output
+            for line in result.stdout.splitlines():
+                if "Done:" in line or "done:" in line:
+                    try:
+                        success_count = int(line.split(":")[-1].strip().split()[0])
+                    except Exception:
+                        pass
+            if success_count == 0:
+                success_count = 0
+    finally:
+        Path(tmp_config).unlink(missing_ok=True)
+
+    rate = success_count / len(devices) if devices else 1.0
+    progress_cb(f"Phase {phase['name']}: {success_count}/{len(devices)} succeeded ({rate*100:.0f}%)")
+
+    # Update phase status in DB
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT config_json FROM fleet_manager.campaigns WHERE id = %s", (campaign_id,))
+        row = c.fetchone()
+        if row:
+            cfg = json.loads(row[0] or "{}")
+            cfg.setdefault("phases", [])[phase_idx]["status"] = (
+                "success" if rate >= fail_threshold else "failed"
+            )
+            c.execute("UPDATE fleet_manager.campaigns SET config_json = %s WHERE id = %s",
+                      (json.dumps(cfg), campaign_id))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        progress_cb(f"Warning: failed to update campaign phase status: {e}")
+
+    return rate >= fail_threshold
+
+
+class CampaignWebSocketHandler(BaseWebSocketHandler):
+    """
+    WebSocket: runs a staged canary campaign.
+    Phases: canary group → batches of N% → abort if failure rate exceeds threshold.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._campaign_id: Optional[int] = None
+
+    async def on_message(self, message):
+        try:
+            data = json.loads(message)
+            if data.get("type") == "spawn":
+                await self.handle_campaign(data)
+        except Exception as e:
+            await self.write_message(json.dumps({"type": "error", "data": str(e)}))
+
+    async def handle_campaign(self, data):
+        if self._campaign_id is not None:
+            return
+
+        instance_slug = data.get("instance")
+        batch_pct = int(data.get("batch_pct", 20))
+        fail_threshold = float(data.get("fail_threshold", 0.9))
+        dry_run = bool(data.get("dry_run", False))
+        campaign_name = data.get("name", f"Campaign {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            await self.write_message(json.dumps({"type": "error", "data": f"Instance {instance_slug} not found"}))
+            return
+
+        # Discover devices
+        devices = [d["yaml_filename"] or d["name"] for d in discover_devices_cached(instance_config)]
+        canaries = _discover_canary_devices(instance_config)
+        phases = _build_campaign_phases(devices, canaries, batch_pct)
+
+        if not devices:
+            await self.write_message(json.dumps({"type": "error", "data": "No devices found in instance"}))
+            return
+
+        # Create campaign record
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO fleet_manager.campaigns
+                (name, instance, status, device_count, config_json, started_at)
+                VALUES (%s, %s, 'running', %s, %s, NOW())
+                RETURNING id
+            ''', (campaign_name, instance_slug, len(devices), json.dumps({
+                "phases": phases,
+                "batch_pct": batch_pct,
+                "fail_threshold": fail_threshold,
+                "dry_run": dry_run
+            })))
+            self._campaign_id = c.fetchone()[0]
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            await self.write_message(json.dumps({"type": "error", "data": f"Failed to create campaign: {e}"}))
+            return
+
+        def send_line(msg):
+            try:
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(
+                        self.write_message(json.dumps({"type": "line", "data": msg}))
+                    )
+                )
+            except Exception:
+                pass
+
+        send_line(f"Campaign: {campaign_name}")
+        send_line(f"Instance: {instance_config['name']}  |  Devices: {len(devices)}  |  Canaries: {len(canaries)}")
+        send_line(f"Batch: {batch_pct}%  |  Abort threshold: {fail_threshold*100:.0f}%  |  Dry run: {dry_run}")
+        send_line(f"Phases: {len(phases)}")
+        send_line("")
+
+        loop = asyncio.get_event_loop()
+        success_count = 0
+        final_status = "completed"
+
+        for i, phase in enumerate(phases):
+            send_line(f"— Phase {i+1}/{len(phases)}: {phase['name']} ({len(phase['devices'])} devices) —")
+            ok = await loop.run_in_executor(
+                None,
+                _run_campaign_phase,
+                self._campaign_id, i, phase, instance_config,
+                fail_threshold, dry_run, send_line
+            )
+            if ok:
+                success_count += len(phase["devices"])
+            else:
+                send_line(f"⚠ Phase {phase['name']} failed threshold. Aborting campaign.")
+                final_status = "aborted"
+                break
+
+        # Finalize campaign record
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute('''
+                UPDATE fleet_manager.campaigns
+                SET status = %s, completed_at = NOW(), success_count = %s, failed_count = %s
+                WHERE id = %s
+            ''', (final_status, success_count, len(devices) - success_count, self._campaign_id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            send_line(f"Warning: failed to finalize campaign: {e}")
+
+        send_line("")
+        send_line(f"=== Campaign {final_status.upper()} — {success_count}/{len(devices)} devices ===")
+        await self.write_message(json.dumps({"type": "exit", "code": 0 if final_status == "completed" else 1}))
+
+
+class CampaignListHandler(tornado.web.RequestHandler):
+    """List past and running campaigns"""
+    def get(self):
+        try:
+            conn = get_db_connection()
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute('''
+                SELECT id, name, instance, status, device_count, success_count, failed_count,
+                       created_at, started_at, completed_at
+                FROM fleet_manager.campaigns
+                ORDER BY created_at DESC LIMIT 50
+            ''')
+            rows = c.fetchall()
+            conn.close()
+            for r in rows:
+                for ts in ('created_at', 'started_at', 'completed_at'):
+                    if r[ts]: r[ts] = r[ts].isoformat()
+            self.write({"campaigns": [dict(r) for r in rows]})
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+
 class BulkProgressWebSocketHandler(BaseWebSocketHandler):
     """WebSocket: server-side push for bulk operation progress (replaces client polling)"""
 
@@ -2551,6 +3284,8 @@ def make_app():
         (r"/ws/logs", LogsWebSocketHandler),
         (r"/ws/bulk-progress", BulkProgressWebSocketHandler),
         (r"/ws/standalone-ota", StandaloneOTAWebSocketHandler),
+        (r"/ws/campaign", CampaignWebSocketHandler),
+        (r"/api/campaigns", CampaignListHandler),
 
         # API endpoints
         (r"/api/instances", InstancesHandler),
@@ -2564,9 +3299,12 @@ def make_app():
         (r"/api/device/([^/]+)/([^/]+)/validate", DeviceValidateHandler),
         (r"/api/device/([^/]+)/([^/]+)/clean", DeviceCleanHandler),
         (r"/api/device/([^/]+)/([^/]+)/logs", DeviceLogsHandler),
+        (r"/api/device/([^/]+)/([^/]+)/compile-history", DeviceCompileHistoryHandler),
+        (r"/api/compile-log/([0-9]+)", DeviceCompileLogDetailHandler),
         (r"/api/device/([^/]+)/([^/]+)/firmware", DeviceFirmwareHandler),
         (r"/api/instance/([^/]+)/clean-platformio", CleanPlatformIOHandler),
         (r"/api/system/kill-stuck-processes", KillStuckProcessesHandler),
+        (r"/api/instance/([^/]+)/package-deps", PackageDepsHandler),
         (r"/api/common/([^/]+)", CommonFilesHandler),
         (r"/api/common/([^/]+)/(.+)", CommonFileHandler),
         (r"/api/config", ConfigHandler),
@@ -2575,6 +3313,9 @@ def make_app():
         (r"/api/devices/live-versions", LiveVersionsHandler),
         (r"/api/esphome/version", ESPHomeVersionHandler),
         (r"/api/esphome/update-builder", UpdateBuilderHandler),
+        (r"/api/scheduled-jobs", ScheduledJobsHandler),
+        (r"/api/scheduled-jobs/([0-9]+)", ScheduledJobHandler),
+        (r"/api/scheduled-jobs/([0-9]+)/run", RunJobNowHandler),
         (r"/api/bulk-operation", BulkOperationHandler),
         (r"/api/operations/([0-9]+)/progress", OperationProgressHandler),
         (r"/api/operations", OperationsHandler),
@@ -2591,6 +3332,10 @@ def make_app():
 if __name__ == '__main__':
     init_db()
 
+    # Start background scheduler and load persisted jobs
+    _scheduler.start()
+    _load_jobs_into_scheduler()
+
     print("=" * 70)
     print("ESPHome Fleet Manager (Tornado)")
     print("=" * 70)
@@ -2600,4 +3345,7 @@ if __name__ == '__main__':
 
     app = make_app()
     app.listen(CONFIG['server']['port'], CONFIG['server']['host'])
-    tornado.ioloop.IOLoop.current().start()
+    try:
+        tornado.ioloop.IOLoop.current().start()
+    finally:
+        _scheduler.shutdown(wait=False)

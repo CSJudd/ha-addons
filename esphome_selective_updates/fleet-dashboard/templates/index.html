@@ -91,6 +91,11 @@
                             title="Run the standalone smart updater for all devices in this instance">
                         🤖 Smart OTA
                     </button>
+                    <button @click="openCampaign()"
+                            class="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg transition"
+                            title="Canary/staged rollout: canary group first, then batches with abort gate">
+                        🎯 Canary Rollout
+                    </button>
                     <button @click="showNewDeviceModal()"
                             class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg transition">
                         ➕ New Device
@@ -150,6 +155,11 @@
                         :class="activeTab === 'history' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
                         class="py-4 px-1 border-b-2 font-medium text-sm">
                     📊 History
+                </button>
+                <button @click="activeTab = 'schedules'; loadScheduledJobs()"
+                        :class="activeTab === 'schedules' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm">
+                    🕐 Schedules
                 </button>
                 <button @click="activeTab = 'settings'; loadSettings()"
                         :class="activeTab === 'settings' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
@@ -456,10 +466,49 @@
                 <!-- Common Files Header -->
                 <div class="px-6 py-4 border-b flex items-center justify-between">
                     <h3 class="text-lg font-semibold text-gray-900">Common Configuration Files</h3>
-                    <button @click="createCommonFile()"
-                            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
-                        ➕ New File
-                    </button>
+                    <div class="flex gap-2">
+                        <button @click="loadPackageDeps()"
+                                :disabled="commonFiles.depsLoading"
+                                class="px-3 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition text-sm disabled:opacity-40">
+                            📊 Usage Analysis
+                        </button>
+                        <button @click="createCommonFile()"
+                                class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
+                            ➕ New File
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Package Dependency Panel -->
+                <div x-show="commonFiles.deps !== null" class="px-6 py-4 border-b bg-blue-50">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="font-semibold text-blue-900">Package Usage — <span x-text="currentInstance" class="font-mono"></span></h4>
+                        <button @click="commonFiles.deps = null; commonFiles.depSelected = null"
+                                class="text-blue-600 hover:text-blue-800 text-sm">× Close</button>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                        <template x-for="[pkg, devices] in Object.entries(commonFiles.deps || {})" :key="pkg">
+                            <div class="bg-white rounded px-3 py-2 border cursor-pointer hover:border-blue-400"
+                                 @click="commonFiles.depSelected = (commonFiles.depSelected === pkg ? null : pkg)">
+                                <div class="font-mono text-xs text-gray-700" x-text="pkg"></div>
+                                <div class="text-xs mt-1"
+                                     :class="devices.length > 0 ? 'text-blue-600' : 'text-gray-400'">
+                                    <span x-text="devices.length"></span> device<span x-show="devices.length !== 1">s</span>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <!-- Selected package device list -->
+                    <div x-show="commonFiles.depSelected" class="mt-3 bg-white rounded border p-3">
+                        <div class="text-xs font-semibold text-gray-600 mb-2">
+                            Devices using <span x-text="commonFiles.depSelected" class="font-mono text-blue-700"></span>:
+                        </div>
+                        <div class="flex flex-wrap gap-1">
+                            <template x-for="dev in (commonFiles.deps[commonFiles.depSelected] || [])" :key="dev">
+                                <span class="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs font-mono" x-text="dev"></span>
+                            </template>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Loading State -->
@@ -568,6 +617,132 @@
         <!-- End History Tab -->
 
         <!-- Settings Tab -->
+        <!-- Schedules Tab -->
+        <div x-show="activeTab === 'schedules'">
+            <div class="bg-white rounded-lg shadow">
+                <div class="px-6 py-4 border-b flex items-center justify-between">
+                    <h3 class="text-lg font-semibold text-gray-900">Scheduled Operations</h3>
+                    <button @click="schedules.showNew = true"
+                            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
+                        ➕ New Schedule
+                    </button>
+                </div>
+
+                <!-- New Job Form -->
+                <div x-show="schedules.showNew" class="px-6 py-4 border-b bg-green-50">
+                    <h4 class="font-semibold text-gray-700 mb-3">New Scheduled Job</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                            <input type="text" x-model="schedules.newJob.name" placeholder="Nightly OTA Update"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-green-500 focus:border-green-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">
+                                Cron Expression (UTC)
+                                <a href="https://crontab.guru" target="_blank" class="text-blue-500 text-xs ml-1">help ↗</a>
+                            </label>
+                            <input type="text" x-model="schedules.newJob.cron" placeholder="0 2 * * 0  (Sundays 2am)"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-green-500 focus:border-green-500 font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Operation</label>
+                            <select x-model="schedules.newJob.operation"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-green-500 focus:border-green-500">
+                                <option value="">— select —</option>
+                                <template x-for="[op, desc] in Object.entries(schedules.availableOps)" :key="op">
+                                    <option :value="op" x-text="op + ' — ' + desc"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Instance</label>
+                            <select x-model="schedules.newJob.instance"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-green-500 focus:border-green-500">
+                                <option value="">All instances</option>
+                                <template x-for="inst in instances" :key="inst.slug">
+                                    <option :value="inst.slug" x-text="inst.name"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" x-model="schedules.newJob.config.dry_run" id="sched-dry-run"
+                                   class="rounded border-gray-300 text-green-600">
+                            <label for="sched-dry-run" class="text-sm text-gray-700">Dry run (no actual flashing)</label>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex gap-3">
+                        <button @click="createScheduledJob()"
+                                :disabled="!schedules.newJob.name || !schedules.newJob.cron || !schedules.newJob.operation"
+                                class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-40 transition">
+                            Save Schedule
+                        </button>
+                        <button @click="schedules.showNew = false"
+                                class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Jobs List -->
+                <div x-show="schedules.loading" class="p-8 text-center text-gray-400">Loading schedules…</div>
+                <div x-show="!schedules.loading && schedules.jobs.length === 0" class="p-8 text-center text-gray-400">
+                    No scheduled jobs yet. Click "New Schedule" to create one.
+                </div>
+                <div x-show="schedules.jobs.length > 0">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 border-b">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Operation</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cron (UTC)</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Run</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            <template x-for="job in schedules.jobs" :key="job.id">
+                                <tr :class="job.enabled ? '' : 'opacity-50 bg-gray-50'">
+                                    <td class="px-6 py-4 font-medium text-gray-900" x-text="job.name"></td>
+                                    <td class="px-6 py-4 text-sm text-gray-600">
+                                        <span class="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded" x-text="job.operation"></span>
+                                    </td>
+                                    <td class="px-6 py-4 font-mono text-sm text-gray-600" x-text="job.cron"></td>
+                                    <td class="px-6 py-4 text-sm text-gray-600" x-text="job.instance || 'all'"></td>
+                                    <td class="px-6 py-4 text-xs text-gray-500"
+                                        x-text="job.last_run ? new Date(job.last_run).toLocaleString() : '—'"></td>
+                                    <td class="px-6 py-4">
+                                        <span x-show="job.last_status === 'success'" class="text-green-600 text-xs">✅ success</span>
+                                        <span x-show="job.last_status === 'failed'" class="text-red-600 text-xs">❌ failed</span>
+                                        <span x-show="job.last_status === 'error'" class="text-red-600 text-xs">⚠️ error</span>
+                                        <span x-show="!job.last_status" class="text-gray-400 text-xs">never run</span>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <div class="flex gap-2">
+                                            <button @click="runJobNow(job.id)"
+                                                    class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                                                ▶ Run Now
+                                            </button>
+                                            <button @click="toggleJob(job)"
+                                                    class="text-xs px-2 py-1 rounded"
+                                                    :class="job.enabled ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' : 'bg-green-100 text-green-700 hover:bg-green-200'"
+                                                    x-text="job.enabled ? 'Disable' : 'Enable'"></button>
+                                            <button @click="deleteScheduledJob(job.id)"
+                                                    class="text-xs px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200">
+                                                Delete
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <div x-show="activeTab === 'settings'">
             <div class="space-y-6">
                 <!-- Substitution Validation -->
@@ -1171,6 +1346,43 @@
                               spellcheck="false"></textarea>
                 </div>
 
+                <!-- Build History -->
+                <div class="px-6 py-4 border-t">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="font-semibold text-gray-700">Build History</h4>
+                        <button @click="loadCompileHistory()"
+                                class="text-xs text-blue-600 hover:text-blue-800 underline">
+                            Refresh
+                        </button>
+                    </div>
+                    <div x-show="deviceModal.historyLoading" class="text-sm text-gray-400 italic">Loading…</div>
+                    <div x-show="!deviceModal.historyLoading && deviceModal.history.length === 0"
+                         class="text-sm text-gray-400 italic">No history yet — compile or upload a device to see entries.</div>
+                    <div x-show="deviceModal.history.length > 0" class="space-y-2">
+                        <template x-for="entry in deviceModal.history" :key="entry.id">
+                            <div class="flex items-center gap-3 text-sm border rounded px-3 py-2 bg-gray-50 hover:bg-gray-100 cursor-pointer"
+                                 @click="viewCompileLog(entry)">
+                                <span :class="entry.exit_code === 0 ? 'text-green-600' : 'text-red-600'" class="font-mono text-xs">
+                                    <span x-show="entry.exit_code === 0">✅</span>
+                                    <span x-show="entry.exit_code !== 0">❌</span>
+                                </span>
+                                <span class="font-medium capitalize" x-text="entry.operation_type"></span>
+                                <span class="text-gray-500 text-xs" x-text="new Date(entry.started_at).toLocaleString()"></span>
+                                <span class="text-gray-400 text-xs ml-auto" x-text="entry.duration_seconds + 's'"></span>
+                            </div>
+                        </template>
+                    </div>
+                    <!-- Log detail view -->
+                    <div x-show="deviceModal.logDetail" class="mt-3">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-xs text-gray-500">Full output:</span>
+                            <button @click="deviceModal.logDetail = null" class="text-xs text-gray-400 hover:text-gray-600">× Close</button>
+                        </div>
+                        <pre class="bg-gray-900 text-green-300 text-xs p-3 rounded overflow-auto max-h-64"
+                             x-text="deviceModal.logDetail?.output || ''"></pre>
+                    </div>
+                </div>
+
                 <!-- Loading -->
                 <div x-show="deviceModal.loading"
                      class="px-6 py-4 border-t text-center">
@@ -1281,6 +1493,92 @@
                     </div>
                     <button @click="closeBulkProgress()"
                             class="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Canary Campaign Modal -->
+    <div x-show="campaign.show" x-cloak
+         class="fixed inset-0 bg-black bg-opacity-50 z-40 flex items-center justify-center p-4"
+         @keydown.escape.window="closeCampaign()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-screen flex flex-col">
+            <div class="px-6 py-4 border-b flex items-center justify-between">
+                <div>
+                    <h2 class="text-xl font-bold text-gray-900">🎯 Canary / Staged Rollout</h2>
+                    <p class="text-sm text-gray-500 mt-0.5">
+                        Update canary devices first, then roll out in batches with an abort gate
+                    </p>
+                </div>
+                <button @click="closeCampaign()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+            </div>
+
+            <!-- Config (only shown when not running) -->
+            <div x-show="!campaign.running && !campaign.output" class="px-6 py-4 border-b space-y-4">
+                <div class="grid grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Campaign Name</label>
+                        <input type="text" x-model="campaign.name"
+                               class="w-full px-3 py-2 border rounded focus:ring-indigo-500 focus:border-indigo-500 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Batch Size
+                            <span class="text-gray-400 font-normal">% of non-canary devices per phase</span>
+                        </label>
+                        <input type="number" x-model.number="campaign.batchPct" min="5" max="100"
+                               class="w-full px-3 py-2 border rounded focus:ring-indigo-500 focus:border-indigo-500 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                            Abort threshold
+                            <span class="text-gray-400 font-normal">% success required to continue</span>
+                        </label>
+                        <input type="number" x-model.number="campaign.failThreshold" min="50" max="100"
+                               class="w-full px-3 py-2 border rounded focus:ring-indigo-500 focus:border-indigo-500 text-sm">
+                    </div>
+                </div>
+                <div class="flex items-center gap-6">
+                    <label class="flex items-center gap-2 text-sm">
+                        <input type="checkbox" x-model="campaign.dryRun"
+                               class="rounded border-gray-300 text-indigo-600">
+                        <span class="font-medium">Dry run</span>
+                    </label>
+                    <p class="text-sm text-gray-500">
+                        Tag canary devices with <code class="bg-gray-100 px-1 font-mono text-xs">substitutions.canary: "true"</code> in their YAML.
+                    </p>
+                </div>
+            </div>
+
+            <!-- Terminal output -->
+            <div x-show="campaign.output || campaign.running"
+                 class="flex-1 overflow-auto p-4 bg-gray-900 font-mono text-xs text-green-300 min-h-64">
+                <pre x-text="campaign.output || 'Starting…'"></pre>
+            </div>
+
+            <div class="px-6 py-4 border-t flex justify-between items-center">
+                <div class="text-sm text-gray-500">
+                    <span x-show="campaign.running" class="flex items-center gap-2">
+                        <span class="inline-block w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        Campaign running…
+                    </span>
+                    <span x-show="!campaign.running && campaign.output">Finished</span>
+                </div>
+                <div class="flex gap-3">
+                    <button @click="startCampaign()"
+                            x-show="!campaign.running && !campaign.output"
+                            class="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
+                        🚀 Launch Campaign
+                    </button>
+                    <button @click="closeCampaign()"
+                            x-show="campaign.running"
+                            class="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
+                        ⏹ Abort
+                    </button>
+                    <button @click="closeCampaign()"
+                            class="px-5 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
                         Close
                     </button>
                 </div>
@@ -1537,7 +1835,10 @@
                     editMode: false,
                     originalOutput: '',
                     logsStreaming: false,
-                    logsWs: null
+                    logsWs: null,
+                    history: [],
+                    historyLoading: false,
+                    logDetail: null
                 },
                 newDeviceModal: {
                     show: false,
@@ -1557,7 +1858,10 @@
                     loading: false,
                     modalOpen: false,
                     currentFile: '',
-                    content: ''
+                    content: '',
+                    deps: null,
+                    depsLoading: false,
+                    depSelected: null
                 },
                 history: {
                     operations: [],
@@ -1608,6 +1912,21 @@
                 newVersionAvailable: false,
                 updatingBuilders: false,
                 liveVersionsLoading: false,
+
+                // ── Scheduler state ─────────────────────────────────────
+                schedules: {
+                    jobs: [],
+                    loading: false,
+                    showNew: false,
+                    availableOps: {},
+                    newJob: { name: '', cron: '0 2 * * 0', operation: '', instance: '', config: { dry_run: false } }
+                },
+
+                // ── Campaign state ───────────────────────────────────────
+                campaign: {
+                    show: false, running: false, output: '', ws: null,
+                    name: '', batchPct: 20, failThreshold: 90, dryRun: true
+                },
 
                 // ── Smart OTA state ─────────────────────────────────────
                 smartOTA: {
@@ -1799,13 +2118,46 @@
                     this.deviceModal.show = true;
                     this.deviceModal.output = '';
                     this.deviceModal.loading = false;
+                    this.deviceModal.history = [];
+                    this.deviceModal.logDetail = null;
+                    this.loadCompileHistory();
                 },
 
                 closeDeviceModal() {
+                    if (this.deviceModal.logsWs) this.stopLogs();
                     this.deviceModal.show = false;
                     this.deviceModal.device = null;
                     this.deviceModal.output = '';
                     this.deviceModal.loading = false;
+                    this.deviceModal.history = [];
+                    this.deviceModal.logDetail = null;
+                },
+
+                async loadCompileHistory() {
+                    const device = this.deviceModal.device;
+                    if (!device) return;
+                    const deviceName = device.yaml_filename || device.name;
+                    this.deviceModal.historyLoading = true;
+                    this.deviceModal.logDetail = null;
+                    try {
+                        const r = await fetch(`/api/device/${device.instance}/${deviceName}/compile-history`);
+                        const data = await r.json();
+                        this.deviceModal.history = data.logs || [];
+                    } catch (e) {
+                        console.error('Error loading compile history:', e);
+                    } finally {
+                        this.deviceModal.historyLoading = false;
+                    }
+                },
+
+                async viewCompileLog(entry) {
+                    try {
+                        const r = await fetch(`/api/compile-log/${entry.id}`);
+                        const data = await r.json();
+                        this.deviceModal.logDetail = data;
+                    } catch (e) {
+                        this.toast('Failed to load log detail', 'error');
+                    }
                 },
 
                 showNewDeviceModal() {
@@ -1932,7 +2284,10 @@
                                         this.deviceModal.output += `\n❌ Failed with exit code ${data.code}`;
                                     }
 
-                                    if (action !== 'logs') this.refreshDevices();
+                                    if (action !== 'logs') {
+                                        this.refreshDevices();
+                                        this.loadCompileHistory();
+                                    }
                                 } else if (data.type === 'error') {
                                     this.deviceModal.output += `\n❌ Error: ${data.data}`;
                                     ws.close();
@@ -2215,6 +2570,25 @@
                         console.error('Error loading common files:', error);
                     } finally {
                         this.commonFiles.loading = false;
+                    }
+                },
+
+                async loadPackageDeps() {
+                    if (!this.currentInstance) return;
+                    this.commonFiles.depsLoading = true;
+                    this.commonFiles.deps = null;
+                    this.commonFiles.depSelected = null;
+                    try {
+                        const r = await fetch(`/api/instance/${this.currentInstance}/package-deps`);
+                        const data = await r.json();
+                        // Sort by device count descending
+                        const sorted = Object.entries(data.deps || {})
+                            .sort(([,a],[,b]) => b.length - a.length);
+                        this.commonFiles.deps = Object.fromEntries(sorted);
+                    } catch (e) {
+                        this.toast('Failed to load package dependencies', 'error');
+                    } finally {
+                        this.commonFiles.depsLoading = false;
                     }
                 },
 
@@ -2630,6 +3004,147 @@
                 closeSmartOTA() {
                     this.stopSmartOTA();
                     this.smartOTA.show = false;
+                },
+
+                // ── Campaign methods ─────────────────────────────────────
+                openCampaign() {
+                    this.campaign.show = true;
+                    this.campaign.output = '';
+                    this.campaign.running = false;
+                    this.campaign.name = `Campaign ${new Date().toLocaleDateString()}`;
+                    this.campaign.ws = null;
+                },
+
+                startCampaign() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/campaign`);
+                    this.campaign.ws = ws;
+                    this.campaign.running = true;
+                    this.campaign.output = '';
+
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({
+                            type: 'spawn',
+                            instance: this.currentInstance,
+                            name: this.campaign.name,
+                            batch_pct: this.campaign.batchPct,
+                            fail_threshold: this.campaign.failThreshold / 100,
+                            dry_run: this.campaign.dryRun
+                        }));
+                    };
+                    ws.onmessage = (event) => {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'line') {
+                            this.campaign.output += msg.data + '\n';
+                        } else if (msg.type === 'exit') {
+                            this.campaign.running = false;
+                            this.campaign.ws = null;
+                            const ok = msg.code === 0;
+                            this.toast(ok ? 'Campaign completed' : 'Campaign aborted', ok ? 'success' : 'warning');
+                            if (ok) this.refreshDevices();
+                        } else if (msg.type === 'error') {
+                            this.campaign.output += `\n❌ ${msg.data}`;
+                            this.campaign.running = false;
+                            this.campaign.ws = null;
+                        }
+                    };
+                    ws.onerror = () => {
+                        this.campaign.output += '\n❌ WebSocket connection error';
+                        this.campaign.running = false;
+                        this.campaign.ws = null;
+                    };
+                },
+
+                closeCampaign() {
+                    if (this.campaign.ws) {
+                        this.campaign.ws.close();
+                        this.campaign.ws = null;
+                    }
+                    this.campaign.running = false;
+                    this.campaign.show = false;
+                },
+
+                // ── Scheduler methods ────────────────────────────────────
+                async loadScheduledJobs() {
+                    this.schedules.loading = true;
+                    try {
+                        const r = await fetch('/api/scheduled-jobs');
+                        const data = await r.json();
+                        this.schedules.jobs = data.jobs || [];
+                        this.schedules.availableOps = data.available_operations || {};
+                    } catch (e) {
+                        this.toast('Failed to load schedules', 'error');
+                    } finally {
+                        this.schedules.loading = false;
+                    }
+                },
+
+                async createScheduledJob() {
+                    const j = this.schedules.newJob;
+                    try {
+                        const r = await fetch('/api/scheduled-jobs', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                name: j.name, cron: j.cron, operation: j.operation,
+                                instance: j.instance, config: j.config
+                            })
+                        });
+                        const data = await r.json();
+                        if (r.ok && data.success) {
+                            this.toast(`Schedule '${j.name}' created`, 'success');
+                            this.schedules.showNew = false;
+                            this.schedules.newJob = { name: '', cron: '0 2 * * 0', operation: '', instance: '', config: {dry_run: false} };
+                            await this.loadScheduledJobs();
+                        } else {
+                            this.toast('Error: ' + (data.error || 'Unknown'), 'error');
+                        }
+                    } catch (e) {
+                        this.toast('Error: ' + e.message, 'error');
+                    }
+                },
+
+                async runJobNow(jobId) {
+                    try {
+                        const r = await fetch(`/api/scheduled-jobs/${jobId}/run`, {method: 'POST'});
+                        const data = await r.json();
+                        if (r.ok) {
+                            this.toast('Job triggered — check logs', 'info');
+                        } else {
+                            this.toast('Error: ' + (data.error || 'Unknown'), 'error');
+                        }
+                    } catch (e) {
+                        this.toast('Error: ' + e.message, 'error');
+                    }
+                },
+
+                async toggleJob(job) {
+                    try {
+                        const r = await fetch(`/api/scheduled-jobs/${job.id}`, {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({enabled: !job.enabled})
+                        });
+                        if (r.ok) {
+                            job.enabled = !job.enabled;
+                            this.toast(`Job ${job.enabled ? 'enabled' : 'disabled'}`, 'info');
+                        }
+                    } catch (e) {
+                        this.toast('Error: ' + e.message, 'error');
+                    }
+                },
+
+                async deleteScheduledJob(jobId) {
+                    if (!confirm('Delete this scheduled job?')) return;
+                    try {
+                        const r = await fetch(`/api/scheduled-jobs/${jobId}`, {method: 'DELETE'});
+                        if (r.ok) {
+                            this.schedules.jobs = this.schedules.jobs.filter(j => j.id !== jobId);
+                            this.toast('Schedule deleted', 'success');
+                        }
+                    } catch (e) {
+                        this.toast('Error: ' + e.message, 'error');
+                    }
                 },
 
                 openNativeDashboard(instanceSlug) {

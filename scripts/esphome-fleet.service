@@ -1,0 +1,29 @@
+[Unit]
+Description=ESPHome Fleet Manager Dashboard
+Documentation=https://github.com/CSJudd/ha-addons
+After=network.target postgresql.service docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=mcp
+Group=mcp
+WorkingDirectory=/opt/esphome-updater/esphome_selective_updates/fleet-dashboard
+
+# Point to your Python venv or system Python
+ExecStart=/usr/bin/python3 /opt/esphome-updater/esphome_selective_updates/fleet-dashboard/app.py
+
+# Config override: set FLEET_CONFIG to use a non-default config file path
+# Environment=FLEET_CONFIG=/opt/esphome-updater/esphome_selective_updates/fleet-dashboard/config.yaml
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=esphome-fleet
+
+# Allow the service to access Docker socket
+SupplementaryGroups=docker
+
+[Install]
+WantedBy=multi-user.target

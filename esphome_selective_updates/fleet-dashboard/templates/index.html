@@ -22,6 +22,40 @@
     </style>
 </head>
 <body class="bg-gray-50">
+
+    <!-- ================================================================
+         Toast Notification Stack
+         ================================================================ -->
+    <div class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none" style="width:22rem">
+        <template x-for="t in toasts" :key="t.id">
+            <div class="pointer-events-auto rounded-r shadow-lg border-l-4 p-4 flex items-start gap-3"
+                 x-transition:enter="transition ease-out duration-250"
+                 x-transition:enter-start="opacity-0 translate-x-8"
+                 x-transition:enter-end="opacity-100 translate-x-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100"
+                 x-transition:leave-end="opacity-0"
+                 :class="{
+                     'bg-green-50 border-green-500':  t.type==='success',
+                     'bg-red-50   border-red-500':    t.type==='error',
+                     'bg-yellow-50 border-yellow-500':t.type==='warning',
+                     'bg-blue-50  border-blue-500':   t.type==='info'
+                 }">
+                <span class="text-lg flex-shrink-0"
+                      x-text="{'success':'✅','error':'❌','warning':'⚠️','info':'ℹ️'}[t.type]||'ℹ️'"></span>
+                <span class="text-sm flex-1 leading-snug"
+                      :class="{
+                          'text-green-900':t.type==='success',
+                          'text-red-900':  t.type==='error',
+                          'text-yellow-900':t.type==='warning',
+                          'text-blue-900': t.type==='info'
+                      }"
+                      x-text="t.message"></span>
+                <button @click="removeToast(t.id)"
+                        class="flex-shrink-0 opacity-40 hover:opacity-100 text-lg leading-none">&times;</button>
+            </div>
+        </template>
+    </div>
     <!-- Header -->
     <div class="bg-blue-600 text-white shadow-lg">
         <div class="container mx-auto px-4 py-4">
@@ -52,6 +86,11 @@
                           class="text-sm text-gray-400 italic animate-pulse">
                         Fetching live versions…
                     </span>
+                    <button @click="openSmartOTA(false)"
+                            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg transition"
+                            title="Run the standalone smart updater for all devices in this instance">
+                        🤖 Smart OTA
+                    </button>
                     <button @click="showNewDeviceModal()"
                             class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg transition">
                         ➕ New Device
@@ -213,6 +252,11 @@
                     <button @click="bulkOperation('upload')"
                             class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition">
                         📡 OTA (Compile/Flash)
+                    </button>
+                    <button @click="openSmartOTA(true)"
+                            class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
+                            title="Run the standalone smart updater (with resume, offline skip, and progress tracking)">
+                        🤖 Smart OTA
                     </button>
                     <button @click="bulkDownload()"
                             class="px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 transition">
@@ -748,6 +792,62 @@
                                 </div>
                             </div>
                         </div>
+
+                        <div class="bg-red-50 border-l-4 border-red-400 p-4">
+                            <div class="flex">
+                                <div class="flex-shrink-0"><span class="text-2xl">🔪</span></div>
+                                <div class="ml-3 flex-1">
+                                    <h4 class="text-sm font-medium text-red-800">Kill Stuck Processes</h4>
+                                    <p class="mt-2 text-sm text-red-700">
+                                        Kill all running ESPHome compile/upload processes on this host.
+                                        Use when an operation is hung and unresponsive.
+                                    </p>
+                                    <div class="mt-4">
+                                        <button @click="killStuckProcesses()"
+                                                class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition text-sm">
+                                            🔪 Kill Stuck Processes
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Database Connection -->
+                <div class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b">
+                        <h3 class="text-lg font-semibold text-gray-900">Database Connection</h3>
+                        <p class="text-sm text-gray-500 mt-1">PostgreSQL connection. Password is managed in config.yaml only.</p>
+                    </div>
+                    <div class="px-6 py-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Host</label>
+                                <input type="text" x-model="settings.database.host"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                                <input type="number" x-model.number="settings.database.port"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Database Name</label>
+                                <input type="text" x-model="settings.database.database"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">User</label>
+                                <input type="text" x-model="settings.database.user"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500">
+                            </div>
+                            <div class="col-span-2">
+                                <p class="text-xs text-gray-500 bg-gray-50 px-3 py-2 rounded border">
+                                    🔒 Password: edit <code class="font-mono">config.yaml</code> directly — not editable here.
+                                </p>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1188,6 +1288,75 @@
         </div>
     </div>
 
+    <!-- Smart OTA Modal -->
+    <div x-show="smartOTA.show" x-cloak
+         class="fixed inset-0 bg-black bg-opacity-50 z-40 flex items-center justify-center p-4"
+         @keydown.escape.window="closeSmartOTA()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-screen flex flex-col">
+            <div class="px-6 py-4 border-b flex items-center justify-between">
+                <div>
+                    <h2 class="text-xl font-bold text-gray-900">🤖 Smart OTA Update</h2>
+                    <p class="text-sm text-gray-500 mt-0.5">
+                        Standalone updater — offline skip, version check, resume support
+                    </p>
+                </div>
+                <button @click="closeSmartOTA()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+            </div>
+
+            <!-- Options row -->
+            <div class="px-6 py-4 border-b bg-gray-50 flex items-center gap-6 flex-wrap">
+                <label class="flex items-center gap-2 text-sm">
+                    <input type="checkbox" x-model="smartOTA.dryRun" :disabled="smartOTA.running"
+                           class="rounded border-gray-300 text-indigo-600">
+                    <span class="font-medium text-gray-700">Dry run</span>
+                    <span class="text-gray-400">(no actual flashing)</span>
+                </label>
+                <div class="text-sm text-gray-500">
+                    <span x-show="smartOTA.useSelected">
+                        Devices: <strong x-text="selectedDevices.length"></strong> selected
+                    </span>
+                    <span x-show="!smartOTA.useSelected">
+                        Devices: <strong>all</strong> in
+                        <span x-text="smartOTA.instance" class="font-mono"></span>
+                    </span>
+                </div>
+            </div>
+
+            <!-- Output -->
+            <div class="flex-1 overflow-auto p-4 bg-gray-900 font-mono text-xs text-green-300 min-h-64"
+                 x-ref="smartOTAOutput">
+                <pre x-text="smartOTA.output || 'Press Start to begin…'"></pre>
+            </div>
+
+            <!-- Footer -->
+            <div class="px-6 py-4 border-t flex justify-between items-center">
+                <div class="text-sm text-gray-500">
+                    <span x-show="smartOTA.running" class="flex items-center gap-2">
+                        <span class="inline-block w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        Running…
+                    </span>
+                    <span x-show="!smartOTA.running && smartOTA.output">Finished</span>
+                </div>
+                <div class="flex gap-3">
+                    <button @click="startSmartOTA()"
+                            :disabled="smartOTA.running"
+                            class="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-40 transition">
+                        ▶ Start
+                    </button>
+                    <button @click="stopSmartOTA()"
+                            x-show="smartOTA.running"
+                            class="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
+                        ⏹ Stop
+                    </button>
+                    <button @click="closeSmartOTA()"
+                            class="px-5 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- New Device Modal -->
     <div x-show="newDeviceModal.show"
          x-cloak
@@ -1404,6 +1573,12 @@
                         compile_timeout: 300,
                         upload_timeout: 300
                     },
+                    database: {
+                        host: 'localhost',
+                        port: 5432,
+                        database: 'esphome_fleet',
+                        user: 'homeassistant'
+                    },
                     instances: []
                 },
                 validationResults: {
@@ -1433,6 +1608,25 @@
                 newVersionAvailable: false,
                 updatingBuilders: false,
                 liveVersionsLoading: false,
+
+                // ── Smart OTA state ─────────────────────────────────────
+                smartOTA: {
+                    show: false, instance: null, dryRun: true, useSelected: false,
+                    output: '', running: false, ws: null
+                },
+
+                // ── Toast notifications ──────────────────────────────────
+                toasts: [],
+                _toastId: 0,
+                toast(message, type = 'info', duration = 5000) {
+                    const id = ++this._toastId;
+                    this.toasts.push({ id, message, type });
+                    if (duration > 0) setTimeout(() => this.removeToast(id), duration);
+                },
+                removeToast(id) {
+                    const i = this.toasts.findIndex(t => t.id === id);
+                    if (i !== -1) this.toasts.splice(i, 1);
+                },
 
                 async init() {
                     await this.loadInstances();
@@ -1580,12 +1774,12 @@
                 },
 
                 async updateDevice(device) {
-                    alert(`Update ${device.name} - Coming soon!`);
+                    this.toast(`Update ${device.name} - Coming soon!`, 'info');
                 },
 
                 async bulkUpdate() {
                     if (confirm(`Update ${this.selectedDevices.length} devices?`)) {
-                        alert('Bulk update - Coming soon!');
+                        this.toast('Bulk update - Coming soon!', 'info');
                     }
                 },
 
@@ -1637,7 +1831,7 @@
                 async createNewDevice() {
                     if (!this.newDeviceModal.device_name || !this.newDeviceModal.friendly_name ||
                         !this.newDeviceModal.device_type || !this.newDeviceModal.area) {
-                        alert('Please fill in all required fields');
+                        this.toast('Please fill in all required fields', 'info');
                         return;
                     }
 
@@ -1664,14 +1858,14 @@
                         const data = await response.json();
 
                         if (response.ok) {
-                            alert(`✅ Device created successfully: ${data.device_name}.yaml`);
+                            this.toast(`✅ Device created successfully: ${data.device_name}.yaml`, 'success');
                             this.closeNewDeviceModal();
                             await this.refreshDevices();
                         } else {
-                            alert(`❌ Error: ${data.error}`);
+                            this.toast(`❌ Error: ${data.error}`, 'error');
                         }
                     } catch (error) {
-                        alert(`❌ Failed to create device: ${error.message}`);
+                        this.toast(`❌ Failed to create device: ${error.message}`, 'error');
                     } finally {
                         this.newDeviceModal.loading = false;
                     }
@@ -1966,14 +2160,14 @@
                         const data = await response.json();
 
                         if (response.ok) {
-                            alert(`✅ ${data.message}`);
+                            this.toast(`✅ ${data.message}`, 'success');
                             this.closeDeviceModal();
                             await this.refreshDevices();
                         } else {
-                            alert(`❌ Error: ${data.error}`);
+                            this.toast(`❌ Error: ${data.error}`, 'error');
                         }
                     } catch (error) {
-                        alert(`❌ Failed to delete device: ${error.message}`);
+                        this.toast(`❌ Failed to delete device: ${error.message}`, 'error');
                     }
                 },
 
@@ -1997,12 +2191,12 @@
                         if (data.success) {
                             this.deviceModal.editMode = false;
                             this.deviceModal.originalOutput = this.deviceModal.output;
-                            alert('Configuration saved successfully!');
+                            this.toast('Configuration saved successfully!', 'success');
                         } else {
-                            alert(`Error: ${data.error}`);
+                            this.toast(`Error: ${data.error}`, 'error');
                         }
                     } catch (error) {
-                        alert(`Error saving configuration: ${error.message}`);
+                        this.toast(`Error saving configuration: ${error.message}`, 'error');
                     } finally {
                         this.deviceModal.loading = false;
                     }
@@ -2032,7 +2226,7 @@
                         this.commonFiles.content = data.content || '';
                         this.commonFiles.modalOpen = true;
                     } catch (error) {
-                        alert(`Error loading file: ${error.message}`);
+                        this.toast(`Error loading file: ${error.message}`, 'error');
                     }
                 },
 
@@ -2041,7 +2235,7 @@
                     if (!fileName) return;
 
                     if (!fileName.endsWith('.yaml')) {
-                        alert('File must have .yaml extension');
+                        this.toast('File must have .yaml extension', 'info');
                         return;
                     }
 
@@ -2063,14 +2257,14 @@
                         const data = await response.json();
 
                         if (data.success) {
-                            alert('File saved successfully!');
+                            this.toast('File saved successfully!', 'success');
                             this.closeCommonFileModal();
                             await this.loadCommonFiles();
                         } else {
-                            alert(`Error: ${data.error}`);
+                            this.toast(`Error: ${data.error}`, 'error');
                         }
                     } catch (error) {
-                        alert(`Error saving file: ${error.message}`);
+                        this.toast(`Error saving file: ${error.message}`, 'error');
                     }
                 },
 
@@ -2085,13 +2279,13 @@
                         const data = await response.json();
 
                         if (data.success) {
-                            alert('File deleted successfully!');
+                            this.toast('File deleted successfully!', 'success');
                             await this.loadCommonFiles();
                         } else {
-                            alert(`Error: ${data.error}`);
+                            this.toast(`Error: ${data.error}`, 'error');
                         }
                     } catch (error) {
-                        alert(`Error deleting file: ${error.message}`);
+                        this.toast(`Error deleting file: ${error.message}`, 'error');
                     }
                 },
 
@@ -2196,20 +2390,20 @@
                             if (result.compose_warnings && result.compose_warnings.length) {
                                 msg += '\n\n⚠️ Compose sync warnings:\n' + result.compose_warnings.join('\n');
                             }
-                            alert(msg);
+                            this.toast(msg, 'info');
                             await this.loadInstances();
                         } else {
-                            alert('❌ Error saving settings: ' + (result.error || 'Unknown error'));
+                            this.toast('❌ Error saving settings: ' + (result.error || 'Unknown error'), 'error');
                         }
                     } catch (error) {
                         console.error('Error saving settings:', error);
-                        alert('❌ Error saving settings: ' + error.message);
+                        this.toast('❌ Error saving settings: ' + error.message, 'error');
                     }
                 },
 
                 async updateBuilders() {
                     if (!this.latestESPHomeVersion) {
-                        alert('❌ Latest ESPHome version not available yet. Please wait a moment and try again.');
+                        this.toast('❌ Latest ESPHome version not available yet. Please wait a moment and try again.', 'error');
                         return;
                     }
 
@@ -2268,7 +2462,7 @@
                     await this.checkESPHomeVersion();
 
                     // Show results after version refresh
-                    alert(results.join('\n\n'));
+                    this.toast(results.join('\n\n'), 'info');
                 },
 
                 addInstance() {
@@ -2303,15 +2497,15 @@
                         };
 
                         if (data.issues.length === 0 && data.recommended_issues.length === 0) {
-                            alert('✅ All devices have required and recommended substitutions!');
+                            this.toast('✅ All devices have required and recommended substitutions!', 'success');
                         } else if (data.issues.length === 0) {
-                            alert(`✅ All devices have required substitutions!\n💡 ${data.missing_recommended} device(s) missing recommended substitutions (physical_location).`);
+                            this.toast(`✅ All devices have required substitutions!\n💡 ${data.missing_recommended} device(s) missing recommended substitutions (physical_location).`, 'success');
                         } else {
                             console.log('Validation issues:', data);
                         }
                     } catch (error) {
                         console.error('Error checking substitutions:', error);
-                        alert('❌ Error checking substitutions: ' + error.message);
+                        this.toast('❌ Error checking substitutions: ' + error.message, 'error');
                         this.validationResults.loading = false;
                     }
                 },
@@ -2327,14 +2521,115 @@
                         const data = await response.json();
 
                         if (data.success) {
-                            alert('✅ PlatformIO cache cleaned!\n\nNext compile will reinstall toolchain.');
+                            this.toast('✅ PlatformIO cache cleaned!\n\nNext compile will reinstall toolchain.', 'success');
                         } else {
-                            alert('❌ Failed to clean cache: ' + (data.error || 'Unknown error'));
+                            this.toast('❌ Failed to clean cache: ' + (data.error || 'Unknown error'), 'error');
                         }
                     } catch (error) {
                         console.error('Error cleaning PlatformIO:', error);
-                        alert('❌ Error: ' + error.message);
+                        this.toast('❌ Error: ' + error.message, 'error');
                     }
+                },
+
+                async killStuckProcesses() {
+                    const confirmed = confirm('🔪 Kill all running ESPHome compile/upload processes?\n\nAny active operations will be terminated immediately.');
+                    if (!confirmed) return;
+                    try {
+                        const response = await fetch('/api/system/kill-stuck-processes', { method: 'POST' });
+                        const data = await response.json();
+                        if (data.success) {
+                            this.toast(data.message || 'Stuck processes killed', 'success');
+                        } else {
+                            this.toast('Error: ' + (data.error || 'Unknown'), 'error');
+                        }
+                    } catch (error) {
+                        this.toast('Error: ' + error.message, 'error');
+                    }
+                },
+
+                // ── Smart OTA (standalone updater) ──────────────────────
+                smartOTA: {
+                    show: false,
+                    instance: null,
+                    dryRun: false,
+                    useSelected: false,
+                    output: '',
+                    running: false,
+                    ws: null
+                },
+
+                openSmartOTA(useSelected = false) {
+                    this.smartOTA = {
+                        show: true,
+                        instance: this.currentInstance,
+                        dryRun: true,
+                        useSelected,
+                        output: '',
+                        running: false,
+                        ws: null
+                    };
+                },
+
+                startSmartOTA() {
+                    if (this.smartOTA.running) return;
+
+                    const devices = this.smartOTA.useSelected
+                        ? this.selectedDevices.map(d => d.yaml_filename || d.name)
+                        : [];
+
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/standalone-ota`);
+                    this.smartOTA.ws = ws;
+                    this.smartOTA.running = true;
+                    this.smartOTA.output = '';
+
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({
+                            type: 'spawn',
+                            instance: this.smartOTA.instance,
+                            devices,
+                            dry_run: this.smartOTA.dryRun
+                        }));
+                    };
+
+                    ws.onmessage = (event) => {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'line') {
+                            this.smartOTA.output += msg.data + '\n';
+                        } else if (msg.type === 'exit') {
+                            ws.close();
+                            this.smartOTA.ws = null;
+                            this.smartOTA.running = false;
+                            const ok = msg.code === 0;
+                            this.smartOTA.output += ok ? '\n\n✅ Smart OTA completed successfully.' : `\n\n❌ Exited with code ${msg.code}.`;
+                            this.toast(ok ? 'Smart OTA finished' : 'Smart OTA failed', ok ? 'success' : 'error');
+                            if (ok) this.refreshDevices();
+                        } else if (msg.type === 'error') {
+                            this.smartOTA.output += `\n❌ ${msg.data}`;
+                            this.smartOTA.running = false;
+                            this.smartOTA.ws = null;
+                        }
+                    };
+
+                    ws.onerror = () => {
+                        this.smartOTA.output += '\n❌ WebSocket connection error';
+                        this.smartOTA.running = false;
+                        this.smartOTA.ws = null;
+                    };
+                },
+
+                stopSmartOTA() {
+                    if (this.smartOTA.ws) {
+                        this.smartOTA.ws.send(JSON.stringify({ type: 'stop' }));
+                        this.smartOTA.ws.close();
+                        this.smartOTA.ws = null;
+                    }
+                    this.smartOTA.running = false;
+                },
+
+                closeSmartOTA() {
+                    this.stopSmartOTA();
+                    this.smartOTA.show = false;
                 },
 
                 openNativeDashboard(instanceSlug) {
@@ -2344,7 +2639,7 @@
                     const instance = this.instances.find(i => i.slug === slug);
                     const url = instance?.dashboard_url;
                     if (!url) {
-                        alert('No dashboard_url configured for this instance');
+                        this.toast('No dashboard_url configured for this instance', 'info');
                         return;
                     }
                     window.open(url, `esphome-${slug}`, 'width=1400,height=900');
@@ -2356,7 +2651,7 @@
 
                 async bulkOperation(operation) {
                     if (this.selectedDevices.length === 0) {
-                        alert('Please select devices first');
+                        this.toast('Please select devices first', 'info');
                         return;
                     }
 
@@ -2402,17 +2697,17 @@
 
                             this.subscribeBulkProgress(data.operation_id);
                         } else {
-                            alert('❌ Failed to start operation: ' + (data.error || 'Unknown error'));
+                            this.toast('❌ Failed to start operation: ' + (data.error || 'Unknown error'), 'error');
                         }
                     } catch (error) {
                         console.error('Error starting bulk operation:', error);
-                        alert('❌ Error: ' + error.message);
+                        this.toast('❌ Error: ' + error.message, 'error');
                     }
                 },
 
                 async bulkDownload() {
                     if (this.selectedDevices.length === 0) {
-                        alert('Please select devices first');
+                        this.toast('Please select devices first', 'info');
                         return;
                     }
 
@@ -2423,12 +2718,12 @@
                     await this.bulkOperation('compile');
 
                     // Add message to progress modal about downloads
-                    alert('💡 Tip: After compile completes, download firmware from History tab → View Details → Download links per device');
+                    this.toast('💡 Tip: After compile completes, download firmware from History tab → View Details → Download links per device', 'warning');
                 },
 
                 async bulkDelete() {
                     if (this.selectedDevices.length === 0) {
-                        alert('Please select devices first');
+                        this.toast('Please select devices first', 'info');
                         return;
                     }
 
@@ -2503,11 +2798,11 @@
                             // Clear selection
                             this.selectedDevices = [];
                         } else {
-                            alert('❌ Failed to start delete operation: ' + (data.error || 'Unknown error'));
+                            this.toast('❌ Failed to start delete operation: ' + (data.error || 'Unknown error'), 'error');
                         }
                     } catch (error) {
                         console.error('Error starting bulk delete:', error);
-                        alert('❌ Error: ' + error.message);
+                        this.toast('❌ Error: ' + error.message, 'error');
                     }
                 },
 
@@ -2615,11 +2910,11 @@
                                       `Failed: ${data.operation.failure_count}\n` +
                                       `Started: ${new Date(data.operation.started_at).toLocaleString()}`;
 
-                        alert(summary + '\n\nSee console for detailed results.');
+                        this.toast(summary + '\n\nSee console for detailed results.', 'info');
                         console.log('Operation Details:', data);
                     } catch (error) {
                         console.error('Error loading operation details:', error);
-                        alert('Error loading operation details');
+                        this.toast('Error loading operation details', 'error');
                     }
                 }
             }

@@ -18,6 +18,8 @@ License: MIT
 """
 
 import re
+import sys
+import tempfile
 import tornado.web
 import tornado.ioloop
 import tornado.websocket
@@ -895,6 +897,147 @@ class LogsWebSocketHandler(BaseWebSocketHandler):
 
 
 # ============================================================================
+# STANDALONE OTA WEBSOCKET HANDLER
+# ============================================================================
+
+def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run: bool) -> str:
+    """
+    Build a temporary config file for the standalone updater, merging the
+    config_template with instance-specific overrides. Returns path to temp file.
+    """
+    updater_cfg = CONFIG.get("updater", {})
+    template_path = updater_cfg.get("config_template")
+
+    base: dict = {}
+    if template_path and Path(template_path).exists():
+        try:
+            base = yaml.safe_load(Path(template_path).read_text()) or {}
+        except Exception:
+            pass
+
+    # Instance overrides — strip keys that start with _ (documentation-only)
+    base = {k: v for k, v in base.items() if not k.startswith("_")}
+    base.update({
+        "mode": "docker",
+        "esphome_config_dir": instance_config["config_dir"],
+        "esphome_container": instance_config["container"],
+        "state_dir": f"/var/lib/esphome-updater-{instance_config['slug']}",
+        "log_dir": "/var/log/esphome-updater",
+        "dry_run": dry_run,
+        "skip_offline": base.get("skip_offline", True),
+        "delay_between_updates": base.get("delay_between_updates", 3),
+    })
+    if devices:
+        base["update_only_these"] = devices
+        base["max_devices_per_run"] = 0  # whitelist is explicit — no cap needed
+    else:
+        base["update_only_these"] = []
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False, prefix="esphome-standalone-"
+    )
+    yaml.dump(base, tmp, default_flow_style=False)
+    tmp.close()
+    return tmp.name
+
+
+class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
+    """
+    WebSocket: runs the standalone esphome-updater script and streams its output.
+    Used by the Smart Update feature for full fleet updates with resume/skip support.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._proc = None
+        self._tmp_config: Optional[str] = None
+
+    async def on_message(self, message):
+        try:
+            data = json.loads(message)
+            if data.get("type") == "spawn":
+                await self.handle_run(data)
+            elif data.get("type") == "stop":
+                if self._proc and self._proc.returncode is None:
+                    self._proc.proc.kill()
+        except Exception as e:
+            await self.write_message(json.dumps({"type": "error", "data": str(e)}))
+
+    async def handle_run(self, data):
+        if self._proc is not None:
+            return
+
+        instance_slug = data.get("instance")
+        devices = data.get("devices", [])
+        dry_run = data.get("dry_run", False)
+
+        instance_config = get_instance_config(instance_slug)
+        if not instance_config:
+            await self.write_message(json.dumps({"type": "error", "data": f"Instance {instance_slug} not found"}))
+            return
+
+        updater_cfg = CONFIG.get("updater", {})
+        script_path = updater_cfg.get("script_path")
+        if not script_path or not Path(script_path).exists():
+            await self.write_message(json.dumps({
+                "type": "error",
+                "data": f"Standalone updater script not found: {script_path or '(not configured)'}\nSet updater.script_path in config.yaml."
+            }))
+            return
+
+        self._tmp_config = _build_standalone_config(instance_config, devices, dry_run)
+
+        mode = "DRY RUN" if dry_run else "LIVE"
+        scope = f"{len(devices)} selected devices" if devices else "all devices"
+        await self.write_message(json.dumps({
+            "type": "line",
+            "data": f"=== Smart OTA Update — {instance_config['name']} — {scope} [{mode}] ==="
+        }))
+
+        cmd = [sys.executable, script_path, "--config", self._tmp_config]
+        try:
+            self._proc = tornado.process.Subprocess(
+                cmd,
+                stdout=tornado.process.Subprocess.STREAM,
+                stderr=subprocess.STDOUT
+            )
+            tornado.ioloop.IOLoop.current().spawn_callback(self._stream_output)
+        except Exception as e:
+            await self.write_message(json.dumps({"type": "error", "data": str(e)}))
+
+    @tornado.gen.coroutine
+    def _stream_output(self):
+        try:
+            while True:
+                try:
+                    line = yield self._proc.stdout.read_until_regex(b"[\n\r]")
+                    text = line.decode("utf-8", "replace").rstrip()
+                    self.write_message(json.dumps({"type": "line", "data": text}))
+                except tornado.iostream.StreamClosedError:
+                    break
+                except Exception:
+                    break
+
+            yield self._proc.wait_for_exit(raise_error=False)
+            self.write_message(json.dumps({"type": "exit", "code": self._proc.returncode}))
+        except tornado.websocket.WebSocketClosedError:
+            if self._proc and self._proc.returncode is None:
+                self._proc.proc.kill()
+        except Exception as e:
+            try:
+                self.write_message(json.dumps({"type": "error", "data": str(e)}))
+            except Exception:
+                pass
+
+    def on_close(self):
+        if self._proc and self._proc.returncode is None:
+            self._proc.proc.kill()
+        if self._tmp_config:
+            Path(self._tmp_config).unlink(missing_ok=True)
+        super().on_close()
+
+
+# ============================================================================
 # REST API HANDLERS
 # ============================================================================
 
@@ -1192,7 +1335,7 @@ class DeviceCreateHandler(tornado.web.RequestHandler):
 
 
 class DeviceDeleteHandler(tornado.web.RequestHandler):
-    """Delete a device: YAML config, storage metadata, and build artifacts"""
+    """Soft-delete a device: YAML + storage moved to .deleted/, build artifacts cleaned"""
     def delete(self, instance_slug, device_name):
         import shutil
 
@@ -1208,15 +1351,19 @@ class DeviceDeleteHandler(tornado.web.RequestHandler):
             self.set_status(404)
             return self.write({"error": f"Device {device_name} not found"})
 
-        # Remove YAML config
-        yaml_file.unlink()
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        deleted_dir = config_dir / ".deleted"
+        deleted_dir.mkdir(exist_ok=True)
 
-        # Remove storage metadata (ESPHome writes this after first compile)
+        # Move YAML to .deleted/ (recoverable)
+        yaml_file.rename(deleted_dir / f"{device_name}-{ts}.yaml")
+
+        # Move storage metadata to .deleted/ (recoverable)
         storage_json = config_dir / ".esphome" / "storage" / f"{device_name}.yaml.json"
         if storage_json.exists():
-            storage_json.unlink()
+            storage_json.rename(deleted_dir / f"{device_name}-{ts}.yaml.json")
 
-        # Remove build directory (name may include friendly-name suffix)
+        # Hard-delete build artifacts (large, not useful to keep)
         build_base = config_dir / ".esphome" / "build"
         if build_base.exists():
             for build_dir in build_base.glob(f"{device_name}*"):
@@ -1226,7 +1373,10 @@ class DeviceDeleteHandler(tornado.web.RequestHandler):
         # Invalidate discovery cache
         _device_cache.pop(instance_slug, None)
 
-        self.write({"success": True, "message": f"Device {device_name} deleted"})
+        self.write({
+            "success": True,
+            "message": f"Device {device_name} deleted (recoverable: .deleted/{device_name}-{ts}.yaml)"
+        })
 
 
 class DeviceValidateHandler(tornado.web.RequestHandler):
@@ -2400,6 +2550,7 @@ def make_app():
         (r"/ws/upload", UploadWebSocketHandler),
         (r"/ws/logs", LogsWebSocketHandler),
         (r"/ws/bulk-progress", BulkProgressWebSocketHandler),
+        (r"/ws/standalone-ota", StandaloneOTAWebSocketHandler),
 
         # API endpoints
         (r"/api/instances", InstancesHandler),

@@ -373,19 +373,16 @@ def check_device_online_tcp(ip: str) -> str:
         return "offline"
 
 def check_device_online(ip: str, device_name: str = "") -> str:
-    """Check if device is online via Home Assistant ESPHome integration, fallback to TCP"""
+    """Check if device is online via Home Assistant ESPHome integration.
+
+    TCP fallback removed: at 400+ device scale, sequential 3s-timeout TCP probes
+    block the Tornado event loop for minutes. Devices not in HA report 'unknown'.
+    """
     if not device_name:
         return "unknown"
 
-    # Get status from HA
     ha_status = get_ha_device_status()
-
-    # Check if we have status for this device in HA
-    if device_name in ha_status:
-        return ha_status[device_name]
-
-    # Device not in HA - fall back to TCP port check for new/unadded devices
-    return check_device_online_tcp(ip)
+    return ha_status.get(device_name, "unknown")
 
 async def get_device_version_async(ip: str, password: str = "") -> Optional[str]:
     """Query ESPHome device via API to get running version"""
@@ -1429,12 +1426,13 @@ class InstancesHandler(tornado.web.RequestHandler):
 
 class DevicesHandler(tornado.web.RequestHandler):
     """Get all devices from all instances"""
-    def get(self):
+    async def get(self):
         instance_filter = self.get_argument('instance', None)
         type_filter = self.get_argument('type', None)
         status_filter = self.get_argument('status', None)
         search = self.get_argument('search', '').lower()
 
+        loop = asyncio.get_event_loop()
         all_devices = []
 
         for instance in CONFIG["instances"]:
@@ -1444,7 +1442,7 @@ class DevicesHandler(tornado.web.RequestHandler):
             if instance_filter and instance["slug"] != instance_filter:
                 continue
 
-            devices = discover_devices_cached(instance)
+            devices = await loop.run_in_executor(None, discover_devices_cached, instance)
             all_devices.extend(devices)
 
         # Apply filters
@@ -1471,20 +1469,22 @@ class DevicesHandler(tornado.web.RequestHandler):
 
 class DeviceTypesHandler(tornado.web.RequestHandler):
     """Get unique device types across all instances"""
-    def get(self):
+    async def get(self):
+        loop = asyncio.get_event_loop()
         types = set()
 
         for instance in CONFIG["instances"]:
             if not instance.get("enabled"):
                 continue
-            devices = discover_devices_cached(instance)
+            devices = await loop.run_in_executor(None, discover_devices_cached, instance)
             types.update(d["device_type"] for d in devices)
 
         self.write({"types": sorted(list(types))})
 
 class StatsHandler(tornado.web.RequestHandler):
     """Get fleet statistics"""
-    def get(self):
+    async def get(self):
+        loop = asyncio.get_event_loop()
         stats = {
             "total_devices": 0,
             "online": 0,
@@ -1498,7 +1498,7 @@ class StatsHandler(tornado.web.RequestHandler):
             if not instance.get("enabled"):
                 continue
 
-            devices = discover_devices_cached(instance)
+            devices = await loop.run_in_executor(None, discover_devices_cached, instance)
             instance_count = len(devices)
 
             stats["total_devices"] += instance_count

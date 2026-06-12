@@ -329,6 +329,7 @@ def get_ha_device_status() -> Dict[str, str]:
             return status_map
     except Exception as e:
         print(f"  Error querying HA for device status: {e}")
+        _ha_status_cache_time = time.time()  # back off on failure, don't retry every call
 
     return {}
 

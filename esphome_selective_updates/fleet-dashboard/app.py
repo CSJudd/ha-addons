@@ -3219,15 +3219,35 @@ class UpdateBuilderHandler(tornado.web.RequestHandler):
             # Update image version in docker-compose.yml
             compose_text = compose_path.read_text()
             image_prefix = "ghcr.io/esphome/esphome:"
-            # Replace the specific service's image line
+            target_image = f"{image_prefix}{target_version}"
+
+            # Parse YAML to get the current image for THIS specific service
+            try:
+                compose_data = yaml.safe_load(compose_text)
+            except Exception as e:
+                self.set_status(500)
+                return self.write({"error": f"Failed to parse compose file: {e}"})
+
+            svc = (compose_data.get("services") or {}).get(compose_service)
+            if not svc:
+                self.set_status(400)
+                return self.write({"error": f"Service '{compose_service}' not found in {compose_file}"})
+
+            current_image = svc.get("image", "")
+            if current_image == target_image:
+                return self.write({"success": True, "message": f"Already at {target_version}", "version": target_version})
+
+            # Service-specific replacement: anchor to the service block so we don't
+            # accidentally update sibling services that share the same image prefix.
             updated = re.sub(
-                rf"(image:\s*{re.escape(image_prefix)})[^\s]+",
-                rf"\g<1>{target_version}",
-                compose_text
+                rf'(  {re.escape(compose_service)}:.*?image:\s*){re.escape(image_prefix)}[^\s\n]+',
+                rf'\g<1>{target_image}',
+                compose_text,
+                flags=re.DOTALL
             )
             if updated == compose_text:
                 self.set_status(400)
-                return self.write({"error": f"Could not find '{image_prefix}' in {compose_file}"})
+                return self.write({"error": f"Could not find '{image_prefix}' under service '{compose_service}' in {compose_file}"})
 
             # Backup then write
             backup_path = compose_path.with_suffix(".yml.bak")

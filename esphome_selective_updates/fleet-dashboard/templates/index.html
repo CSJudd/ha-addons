@@ -14,9 +14,6 @@
     <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
-    <!-- HTMX -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-
     <style>
         [x-cloak] { display: none !important; }
     </style>
@@ -218,8 +215,9 @@
                             @change="filterDevices()"
                             class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
                         <option value="">All Instances</option>
-                        <option value="production">Production</option>
-                        <option value="lab">Lab</option>
+                        <template x-for="inst in instances" :key="inst.slug">
+                            <option :value="inst.slug" x-text="inst.name"></option>
+                        </template>
                     </select>
                 </div>
 
@@ -384,7 +382,8 @@
                                         <thead class="bg-gray-50 border-b">
                                             <tr>
                                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                                                    <input type="checkbox" class="rounded">
+                                                    <input type="checkbox" class="rounded"
+                                                           @change="toggleAll($event.target.checked)">
                                                 </th>
                                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                                                 <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
@@ -698,6 +697,7 @@
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cron (UTC)</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Instance</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Run</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Next Run</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                             </tr>
@@ -713,6 +713,8 @@
                                     <td class="px-6 py-4 text-sm text-gray-600" x-text="job.instance || 'all'"></td>
                                     <td class="px-6 py-4 text-xs text-gray-500"
                                         x-text="job.last_run ? new Date(job.last_run).toLocaleString() : '—'"></td>
+                                    <td class="px-6 py-4 text-xs text-gray-500"
+                                        x-text="job.next_run ? new Date(job.next_run).toLocaleString() : '—'"></td>
                                     <td class="px-6 py-4">
                                         <span x-show="job.last_status === 'success'" class="text-green-600 text-xs">✅ success</span>
                                         <span x-show="job.last_status === 'failed'" class="text-red-600 text-xs">❌ failed</span>
@@ -720,10 +722,14 @@
                                         <span x-show="!job.last_status" class="text-gray-400 text-xs">never run</span>
                                     </td>
                                     <td class="px-6 py-4">
-                                        <div class="flex gap-2">
+                                        <div class="flex gap-2 flex-wrap">
                                             <button @click="runJobNow(job.id)"
                                                     class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
                                                 ▶ Run Now
+                                            </button>
+                                            <button @click="editScheduledJob(job)"
+                                                    class="text-xs px-2 py-1 bg-indigo-100 text-indigo-700 rounded hover:bg-indigo-200">
+                                                ✏️ Edit
                                             </button>
                                             <button @click="toggleJob(job)"
                                                     class="text-xs px-2 py-1 rounded"
@@ -739,6 +745,52 @@
                             </template>
                         </tbody>
                     </table>
+                </div>
+
+                <!-- Edit Job inline panel -->
+                <div x-show="schedules.editJob" x-cloak class="bg-white border border-indigo-200 rounded-lg p-6 shadow-sm">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-4">✏️ Edit Schedule</h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                            <input type="text" x-model="schedules.editJob.name"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Cron (UTC)</label>
+                            <input type="text" x-model="schedules.editJob.cron"
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Operation</label>
+                            <select x-model="schedules.editJob.operation"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                                <template x-for="[key, label] in Object.entries(schedules.availableOps)" :key="key">
+                                    <option :value="key" x-text="label"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Instance</label>
+                            <select x-model="schedules.editJob.instance"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                                <option value="">All Instances</option>
+                                <template x-for="inst in instances" :key="inst.slug">
+                                    <option :value="inst.slug" x-text="inst.name"></option>
+                                </template>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="flex gap-3 mt-4">
+                        <button @click="saveEditJob()"
+                                class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
+                            Save Changes
+                        </button>
+                        <button @click="schedules.editJob = null"
+                                class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                            Cancel
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1572,6 +1624,11 @@
                             class="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
                         🚀 Launch Campaign
                     </button>
+                    <button @click="resetCampaign()"
+                            x-show="!campaign.running && campaign.output"
+                            class="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
+                        🔄 Run Again
+                    </button>
                     <button @click="closeCampaign()"
                             x-show="campaign.running"
                             class="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
@@ -1918,6 +1975,7 @@
                     jobs: [],
                     loading: false,
                     showNew: false,
+                    editJob: null,
                     availableOps: {},
                     newJob: { name: '', cron: '0 2 * * 0', operation: '', instance: '', config: { dry_run: false } }
                 },
@@ -2795,7 +2853,9 @@
 
                     this.updatingBuilders = true;
 
-                    const instances = ['production', 'lab'];
+                    const instances = this.instances
+                        .filter(i => i.enabled !== false)
+                        .map(i => i.slug);
                     const results = [];
 
                     for (const instance of instances) {
@@ -2921,17 +2981,6 @@
                     }
                 },
 
-                // ── Smart OTA (standalone updater) ──────────────────────
-                smartOTA: {
-                    show: false,
-                    instance: null,
-                    dryRun: false,
-                    useSelected: false,
-                    output: '',
-                    running: false,
-                    ws: null
-                },
-
                 openSmartOTA(useSelected = false) {
                     this.smartOTA = {
                         show: true,
@@ -2947,8 +2996,11 @@
                 startSmartOTA() {
                     if (this.smartOTA.running) return;
 
+                    // selectedDevices holds name strings; look up full device objects
                     const devices = this.smartOTA.useSelected
-                        ? this.selectedDevices.map(d => d.yaml_filename || d.name)
+                        ? this.devices
+                            .filter(d => this.selectedDevices.includes(d.name))
+                            .map(d => d.yaml_filename || d.name)
                         : [];
 
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2967,7 +3019,8 @@
                     };
 
                     ws.onmessage = (event) => {
-                        const msg = JSON.parse(event.data);
+                        let msg;
+                        try { msg = JSON.parse(event.data); } catch (e) { return; }
                         if (msg.type === 'line') {
                             this.smartOTA.output += msg.data + '\n';
                         } else if (msg.type === 'exit') {
@@ -3033,7 +3086,8 @@
                         }));
                     };
                     ws.onmessage = (event) => {
-                        const msg = JSON.parse(event.data);
+                        let msg;
+                        try { msg = JSON.parse(event.data); } catch (e) { return; }
                         if (msg.type === 'line') {
                             this.campaign.output += msg.data + '\n';
                         } else if (msg.type === 'exit') {
@@ -3057,11 +3111,17 @@
 
                 closeCampaign() {
                     if (this.campaign.ws) {
+                        try { this.campaign.ws.send(JSON.stringify({type: 'stop'})); } catch (e) {}
                         this.campaign.ws.close();
                         this.campaign.ws = null;
                     }
                     this.campaign.running = false;
                     this.campaign.show = false;
+                },
+
+                resetCampaign() {
+                    this.campaign.output = '';
+                    this.campaign.running = false;
                 },
 
                 // ── Scheduler methods ────────────────────────────────────
@@ -3141,6 +3201,42 @@
                         if (r.ok) {
                             this.schedules.jobs = this.schedules.jobs.filter(j => j.id !== jobId);
                             this.toast('Schedule deleted', 'success');
+                        }
+                    } catch (e) {
+                        this.toast('Error: ' + e.message, 'error');
+                    }
+                },
+
+                editScheduledJob(job) {
+                    this.schedules.editJob = {
+                        id: job.id,
+                        name: job.name,
+                        cron: job.cron,
+                        operation: job.operation,
+                        instance: job.instance || '',
+                        config: job.config_json ? JSON.parse(job.config_json) : { dry_run: false }
+                    };
+                },
+
+                async saveEditJob() {
+                    const j = this.schedules.editJob;
+                    if (!j) return;
+                    try {
+                        const r = await fetch(`/api/scheduled-jobs/${j.id}`, {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                name: j.name, cron: j.cron, operation: j.operation,
+                                instance: j.instance, config: j.config
+                            })
+                        });
+                        const data = await r.json();
+                        if (r.ok && data.success) {
+                            this.toast(`Schedule '${j.name}' updated`, 'success');
+                            this.schedules.editJob = null;
+                            await this.loadScheduledJobs();
+                        } else {
+                            this.toast('Error: ' + (data.error || 'Unknown'), 'error');
                         }
                     } catch (e) {
                         this.toast('Error: ' + e.message, 'error');
@@ -3307,8 +3403,8 @@
                                 pollInterval: null
                             };
 
-                            // Start polling for progress
-                            this.pollBulkProgress();
+                            // Subscribe to bulk progress via WebSocket
+                            this.subscribeBulkProgress(data.operation_id);
 
                             // Clear selection
                             this.selectedDevices = [];
@@ -3331,7 +3427,8 @@
                     };
 
                     ws.onmessage = async (event) => {
-                        const msg = JSON.parse(event.data);
+                        let msg;
+                        try { msg = JSON.parse(event.data); } catch (e) { return; }
                         if (msg.type === 'progress') {
                             this.bulkProgress.completed = msg.completed_count;
                             this.bulkProgress.inProgress = msg.in_progress_count;
@@ -3367,18 +3464,6 @@
                     }
                     this.bulkProgress.show = false;
                     this.selectedDevices = [];
-                },
-
-                clearSelection() {
-                    this.selectedDevices = [];
-                },
-
-                toggleAll(checked) {
-                    if (checked) {
-                        this.selectedDevices = this.filteredDevices.map(d => d.name);
-                    } else {
-                        this.selectedDevices = [];
-                    }
                 },
 
                 // ============================================================================
@@ -3434,8 +3519,6 @@
                 }
             }
         }
-    </script>
-
     </script>
 </body>
 </html>

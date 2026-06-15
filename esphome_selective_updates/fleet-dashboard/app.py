@@ -26,6 +26,7 @@ import tornado.web
 import tornado.ioloop
 import tornado.websocket
 import tornado.gen
+import tornado.process
 from pathlib import Path
 import json
 import subprocess
@@ -41,6 +42,8 @@ import asyncio
 import aioesphomeapi
 import threading
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Add custom YAML constructors to handle ESPHome directives
 def include_constructor(loader, node):
@@ -252,6 +255,21 @@ def init_db():
         )
     ''')
 
+    # Schema migrations: add columns that may be missing on existing installs
+    migrations = [
+        "ALTER TABLE fleet_manager.operation_results ADD COLUMN IF NOT EXISTS output TEXT",
+        "ALTER TABLE fleet_manager.campaigns ADD COLUMN IF NOT EXISTS config_json TEXT",
+        "ALTER TABLE fleet_manager.devices ADD COLUMN IF NOT EXISTS tags TEXT",
+        "ALTER TABLE fleet_manager.devices ADD COLUMN IF NOT EXISTS node_name TEXT",
+        "ALTER TABLE fleet_manager.devices ADD COLUMN IF NOT EXISTS deployed_version TEXT",
+        "ALTER TABLE fleet_manager.devices ADD COLUMN IF NOT EXISTS current_version TEXT",
+    ]
+    for sql in migrations:
+        try:
+            c.execute(sql)
+        except Exception:
+            pass  # Column likely already exists
+
     conn.commit()
     conn.close()
 
@@ -313,16 +331,11 @@ def get_ha_device_status() -> Dict[str, str]:
             # Find all connection_status sensors and extract device names
             for entity in states:
                 entity_id = entity.get("entity_id", "")
-                if "connection_status" in entity_id and entity_id.startswith("binary_sensor."):
-                    # Extract device name from entity_id
-                    # Format: binary_sensor.devicename_something_connection_status
-                    parts = entity_id.replace("binary_sensor.", "").split("_connection_status")[0]
-                    # Get the device name (first part before underscores for compound names)
-                    device_parts = parts.split("_")
-                    if device_parts:
-                        device_name = device_parts[0]  # e.g., "sp101", "mjs007"
-                        state = entity.get("state", "off")
-                        status_map[device_name] = "online" if state == "on" else "offline"
+                if entity_id.startswith("binary_sensor.") and entity_id.endswith("_connection_status"):
+                    # Extract full device name: binary_sensor.{device_name}_connection_status
+                    device_name = entity_id[len("binary_sensor."):-len("_connection_status")]
+                    state = entity.get("state", "off")
+                    status_map[device_name] = "online" if state == "on" else "offline"
 
             _ha_status_cache = status_map
             _ha_status_cache_time = time.time()
@@ -637,6 +650,9 @@ class CompileWebSocketHandler(BaseWebSocketHandler):
 
             if msg_type == "spawn":
                 await self.handle_compile(data)
+            elif msg_type == "stop":
+                if self._proc and self._proc.returncode is None:
+                    self._proc.proc.kill()
             else:
                 await self.write_message(json.dumps({
                     "type": "error",
@@ -1233,17 +1249,16 @@ def _load_jobs_into_scheduler():
 
     for job_id, cron in rows:
         aps_id = f"job_{job_id}"
-        if not _scheduler.get_job(aps_id):
-            try:
-                _scheduler.add_job(
-                    _run_scheduled_job,
-                    CronTrigger.from_crontab(cron, timezone="UTC"),
-                    args=[job_id],
-                    id=aps_id,
-                    replace_existing=True
-                )
-            except Exception as e:
-                print(f"Scheduler: failed to add job {job_id}: {e}")
+        try:
+            _scheduler.add_job(
+                _run_scheduled_job,
+                CronTrigger.from_crontab(cron, timezone="UTC"),
+                args=[job_id],
+                id=aps_id,
+                replace_existing=True
+            )
+        except Exception as e:
+            print(f"Scheduler: failed to add job {job_id}: {e}")
 
 
 class ScheduledJobsHandler(tornado.web.RequestHandler):
@@ -1262,9 +1277,15 @@ class ScheduledJobsHandler(tornado.web.RequestHandler):
             jobs = c.fetchall()
             conn.close()
             for j in jobs:
-                for ts_field in ('created_at', 'last_run', 'next_run'):
+                for ts_field in ('created_at', 'last_run'):
                     if j[ts_field]:
                         j[ts_field] = j[ts_field].isoformat()
+                # Get live next_run from APScheduler (DB column is never updated)
+                aps_job = _scheduler.get_job(f"job_{j['id']}")
+                if aps_job and aps_job.next_run_time:
+                    j['next_run'] = aps_job.next_run_time.isoformat()
+                else:
+                    j['next_run'] = None
             self.write({
                 "jobs": [dict(j) for j in jobs],
                 "available_operations": SCHEDULED_OPERATIONS
@@ -1334,6 +1355,14 @@ class ScheduledJobHandler(tornado.web.RequestHandler):
             data = json.loads(self.request.body)
             job_id = int(job_id)
 
+            # Validate cron if provided
+            if "cron" in data:
+                try:
+                    CronTrigger.from_crontab(data["cron"], timezone="UTC")
+                except Exception as e:
+                    self.set_status(400)
+                    return self.write({"error": f"Invalid cron expression: {e}"})
+
             conn = get_db_connection()
             c = conn.cursor()
 
@@ -1355,23 +1384,35 @@ class ScheduledJobHandler(tornado.web.RequestHandler):
 
             params.append(job_id)
             c.execute(f"UPDATE fleet_manager.scheduled_jobs SET {', '.join(updates)} WHERE id = %s", params)
+
+            # Read back the current state BEFORE closing the connection
+            c.execute("SELECT cron, enabled FROM fleet_manager.scheduled_jobs WHERE id = %s", (job_id,))
+            row = c.fetchone()
             conn.commit()
             conn.close()
 
-            # Re-register in scheduler if cron/enabled changed
+            if not row:
+                self.set_status(404)
+                return self.write({"error": f"Job {job_id} not found"})
+
+            new_cron, new_enabled = row
+
+            # Re-register in scheduler with the final post-update state
             aps_id = f"job_{job_id}"
-            _scheduler.remove_job(aps_id, jobstore=None)
-            if data.get("enabled", True):
-                new_cron = data.get("cron") or c.fetchone()
-                if new_cron:
-                    try:
-                        _scheduler.add_job(
-                            _run_scheduled_job,
-                            CronTrigger.from_crontab(str(new_cron), timezone="UTC"),
-                            args=[job_id], id=aps_id, replace_existing=True
-                        )
-                    except Exception:
-                        pass
+            try:
+                _scheduler.remove_job(aps_id)
+            except Exception:
+                pass  # Job may not be registered (e.g., was disabled)
+
+            if new_enabled and new_cron:
+                try:
+                    _scheduler.add_job(
+                        _run_scheduled_job,
+                        CronTrigger.from_crontab(str(new_cron), timezone="UTC"),
+                        args=[job_id], id=aps_id, replace_existing=True
+                    )
+                except Exception as e:
+                    print(f"Scheduler: failed to re-register job {job_id}: {e}")
 
             self.write({"success": True})
         except Exception as e:
@@ -1432,7 +1473,7 @@ class DevicesHandler(tornado.web.RequestHandler):
         status_filter = self.get_argument('status', None)
         search = self.get_argument('search', '').lower()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         all_devices = []
 
         for instance in CONFIG["instances"]:
@@ -1470,7 +1511,7 @@ class DevicesHandler(tornado.web.RequestHandler):
 class DeviceTypesHandler(tornado.web.RequestHandler):
     """Get unique device types across all instances"""
     async def get(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         types = set()
 
         for instance in CONFIG["instances"]:
@@ -1484,7 +1525,7 @@ class DeviceTypesHandler(tornado.web.RequestHandler):
 class StatsHandler(tornado.web.RequestHandler):
     """Get fleet statistics"""
     async def get(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         stats = {
             "total_devices": 0,
             "online": 0,
@@ -2443,25 +2484,32 @@ def execute_bulk_operation(operation_id: int, operation_type: str, device_list: 
                 config_dir = Path(instance_config["config_dir"])
                 yaml_file = config_dir / f"{device_name}.yaml"
 
-                # Special handling for delete operations - just delete files, don't run esphome
+                # Special handling for delete operations - soft-delete (matches DeviceDeleteHandler)
                 if operation_type == "delete":
                     import shutil
 
-                    # Delete YAML file
-                    if yaml_file.exists():
-                        yaml_file.unlink()
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    deleted_dir = config_dir / ".deleted"
+                    deleted_dir.mkdir(exist_ok=True)
 
-                    # Delete storage JSON
+                    # Move YAML to .deleted/ (recoverable)
+                    if yaml_file.exists():
+                        yaml_file.rename(deleted_dir / f"{device_name}-{ts}.yaml")
+
+                    # Move storage JSON to .deleted/ (recoverable)
                     storage_json = config_dir / ".esphome" / "storage" / f"{device_name}.yaml.json"
                     if storage_json.exists():
-                        storage_json.unlink()
+                        storage_json.rename(deleted_dir / f"{device_name}-{ts}.yaml.json")
 
-                    # Delete build directory (may have friendly name suffix)
+                    # Hard-delete build artifacts (large, not useful to keep)
                     build_base = config_dir / ".esphome" / "build"
                     if build_base.exists():
                         for build_dir in build_base.glob(f"{device_name}*"):
                             if build_dir.is_dir():
                                 shutil.rmtree(build_dir)
+
+                    # Invalidate discovery cache
+                    _device_cache.pop(instance_slug, None)
 
                     end_time = datetime.now()
                     duration = int((end_time - start_time).total_seconds())
@@ -2744,24 +2792,25 @@ def _run_campaign_phase(
     tmp_config = _build_standalone_config(instance_config, devices, dry_run)
     success_count = 0
     try:
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         result = subprocess.run(
             [sys.executable, script_path, "--config", tmp_config],
-            capture_output=True, text=True, timeout=3600
+            capture_output=True, text=True, timeout=3600, env=env
         )
         for line in result.stdout.splitlines():
             progress_cb(line)
         if result.returncode == 0:
             success_count = len(devices)
         else:
-            # Try to parse done count from output
+            # Try to parse done count from output (e.g. "Done: 3")
             for line in result.stdout.splitlines():
                 if "Done:" in line or "done:" in line:
                     try:
-                        success_count = int(line.split(":")[-1].strip().split()[0])
+                        token = line.split(":")[-1].strip().split()[0].split("/")[0]
+                        success_count = int(token)
+                        break
                     except Exception:
                         pass
-            if success_count == 0:
-                success_count = 0
     finally:
         Path(tmp_config).unlink(missing_ok=True)
 
@@ -2822,8 +2871,10 @@ class CampaignWebSocketHandler(BaseWebSocketHandler):
             await self.write_message(json.dumps({"type": "error", "data": f"Instance {instance_slug} not found"}))
             return
 
-        # Discover devices
-        devices = [d["yaml_filename"] or d["name"] for d in discover_devices_cached(instance_config)]
+        # Discover devices (run in executor — YAML glob + HA HTTP call = blocking I/O)
+        _loop = asyncio.get_running_loop()
+        raw_devices = await _loop.run_in_executor(None, discover_devices_cached, instance_config)
+        devices = [d["yaml_filename"] or d["name"] for d in raw_devices]
         canaries = _discover_canary_devices(instance_config)
         phases = _build_campaign_phases(devices, canaries, batch_pct)
 
@@ -2853,12 +2904,13 @@ class CampaignWebSocketHandler(BaseWebSocketHandler):
             await self.write_message(json.dumps({"type": "error", "data": f"Failed to create campaign: {e}"}))
             return
 
+        loop = asyncio.get_running_loop()
+
         def send_line(msg):
             try:
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(
-                        self.write_message(json.dumps({"type": "line", "data": msg}))
-                    )
+                loop.call_soon_threadsafe(
+                    asyncio.ensure_future,
+                    self.write_message(json.dumps({"type": "line", "data": msg}))
                 )
             except Exception:
                 pass
@@ -2868,11 +2920,10 @@ class CampaignWebSocketHandler(BaseWebSocketHandler):
         send_line(f"Batch: {batch_pct}%  |  Abort threshold: {fail_threshold*100:.0f}%  |  Dry run: {dry_run}")
         send_line(f"Phases: {len(phases)}")
         send_line("")
-
-        loop = asyncio.get_event_loop()
         success_count = 0
         final_status = "completed"
 
+        aborted_at_phase = -1
         for i, phase in enumerate(phases):
             send_line(f"— Phase {i+1}/{len(phases)}: {phase['name']} ({len(phase['devices'])} devices) —")
             ok = await loop.run_in_executor(
@@ -2886,6 +2937,7 @@ class CampaignWebSocketHandler(BaseWebSocketHandler):
             else:
                 send_line(f"⚠ Phase {phase['name']} failed threshold. Aborting campaign.")
                 final_status = "aborted"
+                aborted_at_phase = i
                 break
 
         # Finalize campaign record
@@ -2930,6 +2982,37 @@ class CampaignListHandler(tornado.web.RequestHandler):
             self.write({"error": str(e)})
 
 
+class CampaignDetailHandler(tornado.web.RequestHandler):
+    """Get a single campaign with full config (phases, status)"""
+    def get(self, campaign_id):
+        try:
+            conn = get_db_connection()
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute('''
+                SELECT id, name, instance, status, device_count, success_count, failed_count,
+                       created_at, started_at, completed_at, config_json
+                FROM fleet_manager.campaigns WHERE id = %s
+            ''', (int(campaign_id),))
+            row = c.fetchone()
+            conn.close()
+            if not row:
+                self.set_status(404)
+                return self.write({"error": "Campaign not found"})
+            r = dict(row)
+            for ts in ('created_at', 'started_at', 'completed_at'):
+                if r[ts]: r[ts] = r[ts].isoformat()
+            if r.get('config_json'):
+                try:
+                    r['config'] = json.loads(r['config_json'])
+                except Exception:
+                    r['config'] = {}
+            del r['config_json']
+            self.write(r)
+        except Exception as e:
+            self.set_status(500)
+            self.write({"error": str(e)})
+
+
 class BulkProgressWebSocketHandler(BaseWebSocketHandler):
     """WebSocket: server-side push for bulk operation progress (replaces client polling)"""
 
@@ -2949,7 +3032,7 @@ class BulkProgressWebSocketHandler(BaseWebSocketHandler):
             await self.write_message(json.dumps({"type": "error", "data": str(e)}))
 
     async def _push_loop(self, operation_id: int):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             while True:
                 progress = await loop.run_in_executor(
@@ -3144,21 +3227,31 @@ class LiveVersionsHandler(tornado.web.RequestHandler):
     """Query all devices for their running firmware version via ESPHome native API"""
 
     async def get(self):
-        # Collect all queryable devices (those with a known IP)
+        loop = asyncio.get_running_loop()
+
+        # Collect all queryable devices via executor (YAML glob is blocking I/O)
         queryable = []
         for instance in CONFIG.get("instances", []):
             if not instance.get("enabled"):
                 continue
-            for device in discover_devices_cached(instance):
+            devices = await loop.run_in_executor(None, discover_devices_cached, instance)
+            for device in devices:
                 if device.get("ip_address"):
                     queryable.append((device["name"], device["ip_address"]))
 
         if not queryable:
             return self.write({"versions": {}, "queried": 0, "found": 0})
 
-        # Query all devices in parallel; each has an internal 3s timeout
+        # Limit simultaneous aioesphomeapi connections — 400+ uncapped will exhaust
+        # file descriptors and overwhelm home network switch state tables.
+        _sem = asyncio.Semaphore(30)
+
+        async def _bounded_query(name, ip):
+            async with _sem:
+                return await _query_one_device(name, ip)
+
         results = await asyncio.gather(
-            *[_query_one_device(name, ip) for name, ip in queryable],
+            *[_bounded_query(name, ip) for name, ip in queryable],
             return_exceptions=True
         )
 
@@ -3307,6 +3400,7 @@ def make_app():
         (r"/ws/standalone-ota", StandaloneOTAWebSocketHandler),
         (r"/ws/campaign", CampaignWebSocketHandler),
         (r"/api/campaigns", CampaignListHandler),
+        (r"/api/campaigns/([0-9]+)", CampaignDetailHandler),
 
         # API endpoints
         (r"/api/instances", InstancesHandler),
@@ -3344,7 +3438,7 @@ def make_app():
     ],
     template_path=Path(__file__).parent,
     static_path=Path(__file__).parent / "static",
-    debug=True)
+    debug=CONFIG.get("server", {}).get("debug", False))
 
 # ============================================================================
 # ENTRY POINT

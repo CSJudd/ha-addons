@@ -2318,7 +2318,7 @@
                                 }));
                             };
 
-                            ws.onmessage = (event) => {
+                            ws.onmessage = async (event) => {
                                 const data = JSON.parse(event.data);
 
                                 if (data.type === 'line') {

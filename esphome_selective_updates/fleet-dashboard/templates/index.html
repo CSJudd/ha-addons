@@ -348,7 +348,7 @@
                                                 📌 Pinned: <span x-text="device.pinned_version"></span>
                                             </div>
                                             <div x-show="device.update_available" class="text-xs text-orange-600">
-                                                ⚠ Update to <span x-text="device.deployed_version"></span>
+                                                ⚠ Update to <span x-text="(device.pinned_version && device.pinned_version !== '*') ? device.pinned_version : (currentBuilderVersions[device.instance] || 'latest')"></span>
                                             </div>
                                         </td>
                                         <td class="px-4 py-3">
@@ -431,7 +431,7 @@
                                                             📌 Pinned: <span x-text="device.pinned_version"></span>
                                                         </div>
                                                         <div x-show="device.update_available" class="text-xs text-orange-600">
-                                                            ⚠ Update to <span x-text="device.deployed_version"></span>
+                                                            ⚠ Update to <span x-text="(device.pinned_version && device.pinned_version !== '*') ? device.pinned_version : (currentBuilderVersions[device.instance] || 'latest')"></span>
                                                         </div>
                                                     </td>
                                                     <td class="px-4 py-2">
@@ -1290,7 +1290,7 @@
                             <div class="text-xs text-gray-500">Running Version</div>
                             <div class="font-medium" x-text="deviceModal.device?.current_version || deviceModal.device?.deployed_version || 'unknown'"></div>
                             <div x-show="deviceModal.device?.update_available" class="text-xs text-orange-600 mt-1">
-                                ⚠ Update available: <span x-text="deviceModal.device?.deployed_version"></span>
+                                ⚠ Update available: <span x-text="(deviceModal.device?.pinned_version && deviceModal.device?.pinned_version !== '*') ? deviceModal.device?.pinned_version : (currentBuilderVersions[deviceModal.device?.instance] || 'latest')"></span>
                             </div>
                         </div>
                         <div>
@@ -2343,7 +2343,15 @@
                                     }
 
                                     if (action !== 'logs') {
-                                        this.refreshDevices();
+                                        await this.refreshDevices();
+                                        // Sync modal to refreshed device data so update_available clears
+                                        if (this.deviceModal.device) {
+                                            const refreshed = this.devices.find(d =>
+                                                d.name === this.deviceModal.device.name &&
+                                                d.instance === this.deviceModal.device.instance
+                                            );
+                                            if (refreshed) this.deviceModal.device = refreshed;
+                                        }
                                         this.loadCompileHistory();
                                     }
                                 } else if (data.type === 'error') {
@@ -2752,14 +2760,24 @@
                         const data = await response.json();
 
                         if (data.versions) {
-                            // Update devices with HA versions
+                            // Update devices with HA-reported running versions
                             this.devices.forEach(device => {
                                 const deviceName = device.name.replace(/-/g, '_');
-                                if (data.versions[deviceName]) {
-                                    device.current_version = data.versions[deviceName];
-                                    // Check if update available
-                                    if (device.deployed_version && device.deployed_version !== data.versions[deviceName]) {
-                                        device.update_available = true;
+                                const haVersion = data.versions[deviceName];
+                                if (haVersion) {
+                                    device.current_version = haVersion;
+                                    if (device.deployed_version) {
+                                        // Strip config hash suffix before comparing
+                                        // (HA sensors and aioesphomeapi sometimes append " (config hash 0x...)")
+                                        const strip = v => v.split(/\s/)[0].trim();
+                                        const deployed = strip(device.deployed_version);
+                                        const running = strip(haVersion);
+                                        // Bidirectional: set OR clear update_available based on live HA data
+                                        if (deployed !== running) {
+                                            device.update_available = true;
+                                        } else {
+                                            device.update_available = false;
+                                        }
                                     }
                                 }
                             });

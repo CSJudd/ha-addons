@@ -31,8 +31,8 @@ from typing import Optional, List, Tuple, Dict
 ADDON_OPTIONS_PATH = Path(os.environ.get("ESPHOME_UPDATER_DATA_DIR", "/data")) / "options.json"
 STATE_PATH         = Path(os.environ.get("ESPHOME_UPDATER_STATE_DIR", "/data")) / "state.json"
 LOG_FILE           = Path(os.environ.get("ESPHOME_UPDATER_LOG_DIR", "/config")) / "esphome_smart_update.log"
-PROGRESS_FILE      = Path(os.environ.get("ESPHOME_UPDATER_STATE_DIR", "/config")) / "esphome_update_progress.json"
-ESPHOME_CONFIG_DIR = Path(os.environ.get("ESPHOME_UPDATER_CONFIG_DIR", "/config/esphome"))
+PROGRESS_FILE      = Path(os.environ.get("ESPHOME_UPDATER_STATE_DIR", "/data")) / "esphome_update_progress.json"
+ESPHOME_CONFIG_DIR = Path(os.environ.get("ESPHOME_UPDATER_CONFIG_DIR", "/data/esphome"))
 DASHBOARD_JSON     = ESPHOME_CONFIG_DIR / ".dashboard.json"
 
 # Standalone mode: Container path for ESPHome configs (inside Docker container)
@@ -213,14 +213,21 @@ ESPHOME_NAME_RE = re.compile(r"^esphome:\s*$", re.MULTILINE)
 NAME_LINE_RE    = re.compile(r"^\s+name\s*:\s*(\S+)\s*$")
 
 def parse_node_name(yaml_text: str) -> Optional[str]:
-    """Extract ESPHome device name from YAML config"""
+    """Extract ESPHome device name from YAML config.
+    Returns None if name is a substitution variable (${...}) so callers
+    can fall back to the YAML file stem.
+    """
+    def _clean(val: str) -> Optional[str]:
+        v = val.strip()
+        return None if "$" in v else v
+
     # Find 'esphome:' block
     m = ESPHOME_NAME_RE.search(yaml_text)
     if not m:
-        # Fallback: look for top-level 'name:'
+        # Fallback: look for substitutions.name which ESPHome convention uses
         m2 = re.search(r"^\s*name\s*:\s*([^\s#]+)", yaml_text, re.MULTILINE)
-        return m2.group(1).strip() if m2 else None
-    
+        return _clean(m2.group(1)) if m2 else None
+
     start = m.end()
     # Extract indented lines following 'esphome:'
     block = []
@@ -231,14 +238,16 @@ def parse_node_name(yaml_text: str) -> Optional[str]:
         if not line.startswith(" "):
             break  # Next top-level section
         block.append(line)
-    
-    # Find 'name:' within the block
+
+    # Find 'name:' within the esphome: block
     for line in block:
         m2 = NAME_LINE_RE.match(line)
         if m2:
-            return m2.group(1).strip()
-    
-    return None
+            return _clean(m2.group(1))
+
+    # Last resort: substitutions.name
+    m3 = re.search(r"^\s*name\s*:\s*([^\s#]+)", yaml_text, re.MULTILINE)
+    return _clean(m3.group(1)) if m3 else None
 
 # ============================================================================
 # DEVICE DISCOVERY
@@ -258,9 +267,9 @@ def discover_devices() -> List[dict]:
         except Exception:
             text = ""
         
-        # Extract IP address (if manually configured)
+        # Extract static IP — ESPHome YAML uses static_ip: under wifi.manual_ip
         ip = None
-        m_ip = re.search(r"manual_ip\s*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
+        m_ip = re.search(r"static_ip\s*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
         if m_ip:
             ip = m_ip.group(1).strip()
         
@@ -614,7 +623,7 @@ def verify_esphome_config_dir() -> bool:
     if yaml_count == 0:
         log("")
         log("⚠ WARNING: No device configurations found")
-        log("   Add device YAML files to /config/esphome/ first")
+        log(f"   Add device YAML files to {ESPHOME_CONFIG_DIR}/ first")
         log("")
         return False
     
@@ -850,7 +859,7 @@ def main():
     log(f"✓ Operating boundaries:")
     log(f"  • Docker container: {esphome_container}")
     log(f"  • Config directory: {ESPHOME_CONFIG_DIR}")
-    log(f"  • Build output: /config/esphome/builds/")
+    log(f"  • Build output: {CONTAINER_CONFIG_PATH}/.esphome/build/")
     log(f"  • No access to: host system, other containers, external networks")
     
     # Start main process

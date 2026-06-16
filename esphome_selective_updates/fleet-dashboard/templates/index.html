@@ -343,7 +343,7 @@
                                                   x-text="device.status"></span>
                                         </td>
                                         <td class="px-4 py-3">
-                                            <div class="text-sm text-gray-900" x-text="device.current_version || device.deployed_version || 'unknown'"></div>
+                                            <div class="text-sm text-gray-900" x-text="(device.current_version || device.deployed_version || 'unknown').split(' ')[0]"></div>
                                             <div x-show="device.pinned_version && device.pinned_version !== '*'" class="text-xs text-blue-600">
                                                 📌 Pinned: <span x-text="device.pinned_version"></span>
                                             </div>
@@ -426,7 +426,7 @@
                                                               x-text="device.status"></span>
                                                     </td>
                                                     <td class="px-4 py-2">
-                                                        <div class="text-sm text-gray-900" x-text="device.current_version || device.deployed_version || 'unknown'"></div>
+                                                        <div class="text-sm text-gray-900" x-text="(device.current_version || device.deployed_version || 'unknown').split(' ')[0]"></div>
                                                         <div x-show="device.pinned_version && device.pinned_version !== '*'" class="text-xs text-blue-600">
                                                             📌 Pinned: <span x-text="device.pinned_version"></span>
                                                         </div>
@@ -2768,17 +2768,16 @@
                                     device.current_version = haVersion;
                                     if (device.deployed_version) {
                                         // Strip config hash suffix before comparing
-                                        // (HA sensors and aioesphomeapi sometimes append " (config hash 0x...)")
                                         const strip = v => v.split(/\s/)[0].trim();
                                         const deployed = strip(device.deployed_version);
                                         const running = strip(haVersion);
-                                        // Bidirectional: set OR clear update_available based on live HA data
+                                        // Only override to true — never clear a backend-set true.
+                                        // (Backend already correctly detects container-version upgrades;
+                                        //  we add signal when device is running an older version than
+                                        //  what was last compiled for it.)
                                         if (deployed !== running) {
                                             device.update_available = true;
-                                        } else {
-                                            device.update_available = false;
                                         }
-                                    }
                                 }
                             });
                             console.log(`Loaded versions from HA for ${data.count} devices`);

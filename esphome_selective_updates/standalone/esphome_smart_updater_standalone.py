@@ -435,33 +435,24 @@ def compile_in_esphome_container(
             log(f"✗ Compilation failed for {device_name}")
         return None
     
-    # Locate compiled binary
+    # Verify the compiled binary exists inside the container.
+    # OTA upload is done via 'esphome upload' (docker exec), so we never
+    # need the binary on the host — just confirm it's there before proceeding.
     stem = Path(yaml_name).stem
-    pio_bin = f"/data/build/{stem}*/.pioenvs/{stem}*/firmware.bin"
-    legacy = f"/config/esphome/.esphome/build/{stem}/{stem}.bin"
-    
-    dst_dir = Path("/config/esphome/builds")
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = str(dst_dir / f"{stem}.bin")
-    
-    # Try new PlatformIO path structure
+    build_base = f"{CONTAINER_CONFIG_PATH}/.esphome/build"
+
     rc, out = docker_exec(
         container,
-        ["sh", "-lc", f"set -e; ls -1 {pio_bin} 2>/dev/null | head -n1"],
+        ["sh", "-lc",
+         f"find {build_base} -name 'firmware.bin' -path '*{stem}*' 2>/dev/null | head -1"],
         capture=True
     )
-    
+
     if rc == 0 and out.strip():
-        src = out.strip().splitlines()[0].strip()
-        if docker_cp(container, src, dst) == 0:
-            log(f"→ Binary copied to {dst} (from {src})")
-            return dst
-    
-    # Fallback to legacy path
-    if docker_cp(container, legacy, dst) == 0:
-        log(f"→ Binary copied to {dst} (from {legacy})")
-        return dst
-    
+        bin_path = out.strip().splitlines()[0].strip()
+        log(f"→ Binary verified in container: {bin_path}")
+        return bin_path  # container-internal path; truthy = compile succeeded
+
     log(f"✗ Could not locate firmware binary for {device_name}")
     return None
 

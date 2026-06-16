@@ -398,7 +398,16 @@ def check_device_online(ip: str, device_name: str = "") -> str:
         return "unknown"
 
     ha_status = get_ha_device_status()
-    return ha_status.get(device_name, "unknown")
+    status = ha_status.get(device_name)
+    if status:
+        return status
+    # Prefix match: handles ESPHome 31-char name truncation where the YAML name
+    # is shorter than the HA entity (registered before the name was truncated).
+    normalized = device_name.replace("-", "_")
+    for key, val in ha_status.items():
+        if key.replace("-", "_").startswith(normalized):
+            return val
+    return "unknown"
 
 async def get_device_version_async(ip: str, password: str = "") -> Optional[str]:
     """Query ESPHome device via API to get running version"""
@@ -466,13 +475,21 @@ def discover_devices(instance: Dict) -> List[Dict]:
             substitutions = config.get("substitutions", {})
 
             # Extract device info from YAML
-            esphome_config = config.get("esphome", {})
+            esphome_config = config.get("esphome", {}) or {}
             name = esphome_config.get("name") or yaml_file.stem
 
-            # Resolve substitution variables
+            # Resolve substitution variables in the name
             if isinstance(name, str) and name.startswith("${") and name.endswith("}"):
                 sub_var = name[2:-1]
                 name = substitutions.get(sub_var, yaml_file.stem)
+
+            # Many devices define esphome: inside a package !include (which our
+            # dummy constructor returns as {}), so esphome.name is absent and we
+            # fall back to the file stem.  ESPHome convention: substitutions.name
+            # IS the canonical device name — use it when available.
+            if name == yaml_file.stem and substitutions.get("name"):
+                name = substitutions["name"]
+
             area = substitutions.get("area", "Unknown")
             physical_location = substitutions.get("physical_location")
 

@@ -333,9 +333,12 @@ def get_ha_device_status() -> Dict[str, str]:
                 entity_id = entity.get("entity_id", "")
                 if entity_id.startswith("binary_sensor.") and entity_id.endswith("_connection_status"):
                     # Extract full device name: binary_sensor.{device_name}_connection_status
-                    device_name = entity_id[len("binary_sensor."):-len("_connection_status")]
-                    state = entity.get("state", "off")
-                    status_map[device_name] = "online" if state == "on" else "offline"
+                    # HA stores hyphens as underscores in entity IDs; ESPHome uses hyphens.
+                    # Store both so lookup succeeds regardless of which separator the YAML uses.
+                    underscore_name = entity_id[len("binary_sensor."):-len("_connection_status")]
+                    status = "online" if entity.get("state", "off") == "on" else "offline"
+                    status_map[underscore_name] = status
+                    status_map[underscore_name.replace("_", "-")] = status
 
             _ha_status_cache = status_map
             _ha_status_cache_time = time.time()
@@ -1037,6 +1040,9 @@ def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run:
         "dry_run": dry_run,
         "skip_offline": base.get("skip_offline", True),
         "delay_between_updates": base.get("delay_between_updates", 3),
+        # Always start fresh from the web UI — stale "done" lists from
+        # previous runs would otherwise silently skip devices.
+        "clear_progress_on_start": True,
     })
     if devices:
         base["update_only_these"] = devices

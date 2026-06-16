@@ -1060,10 +1060,11 @@ def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run:
         # Always start fresh from the web UI — stale "done" lists from
         # previous runs would otherwise silently skip devices.
         "clear_progress_on_start": True,
+        # Always override template cap — web UI controls scope explicitly
+        "max_devices_per_run": 0,
     })
     if devices:
         base["update_only_these"] = devices
-        base["max_devices_per_run"] = 0  # whitelist is explicit — no cap needed
     else:
         base["update_only_these"] = []
 

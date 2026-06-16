@@ -208,13 +208,17 @@ NAME_LINE_RE    = re.compile(r"^\s+name\s*:\s*(\S+)\s*$")
 
 def parse_node_name(yaml_text: str) -> Optional[str]:
     """Extract ESPHome device name from YAML config"""
+    def _clean(val: str) -> Optional[str]:
+        v = val.strip()
+        return None if "$" in v else v
+
     # Find 'esphome:' block
     m = ESPHOME_NAME_RE.search(yaml_text)
     if not m:
         # Fallback: look for top-level 'name:'
         m2 = re.search(r"^\s*name\s*:\s*([^\s#]+)", yaml_text, re.MULTILINE)
-        return m2.group(1).strip() if m2 else None
-    
+        return _clean(m2.group(1)) if m2 else None
+
     start = m.end()
     # Extract indented lines following 'esphome:'
     block = []
@@ -225,13 +229,13 @@ def parse_node_name(yaml_text: str) -> Optional[str]:
         if not line.startswith(" "):
             break  # Next top-level section
         block.append(line)
-    
+
     # Find 'name:' within the block
     for line in block:
         m2 = NAME_LINE_RE.match(line)
         if m2:
-            return m2.group(1).strip()
-    
+            return _clean(m2.group(1))
+
     return None
 
 # ============================================================================
@@ -253,8 +257,9 @@ def discover_devices() -> List[dict]:
             text = ""
         
         # Extract IP address (if manually configured)
+        # static_ip: is the actual YAML key (manual_ip: is its parent section)
         ip = None
-        m_ip = re.search(r"manual_ip\s*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
+        m_ip = re.search(r"static_ip\s*:\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
         if m_ip:
             ip = m_ip.group(1).strip()
         

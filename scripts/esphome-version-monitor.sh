@@ -31,7 +31,7 @@ update_esphome() {
 
 CURRENT=$(get_current_version)
 LATEST=$(get_latest_version)
-[[ -z "$CURRENT" ]] || [[ -z "$LATEST" ]] && send_telegram "⚠️ ESPHome check failed" && exit 1
+[[ -z "$CURRENT" || -z "$LATEST" ]] && send_telegram "⚠️ ESPHome check failed" && exit 1
 
 if [[ "${CURRENT#v}" != "${LATEST#v}" ]]; then
     MSG="🔔 New ESPHome: ${LATEST}

@@ -286,6 +286,34 @@ _device_cache: Dict[str, List[Dict]] = {}
 _device_cache_time: Dict[str, float] = {}
 DEVICE_CACHE_TTL = 30
 
+# Background Smart OTA jobs — survive WebSocket disconnects
+# slug → {proc, log_file, tmp_config, started, scope, dry_run}
+_smart_ota_jobs: Dict[str, dict] = {}
+
+
+def _smart_ota_log_file(slug: str) -> Path:
+    return Path(f"/var/log/esphome-updater/{slug}/esphome_smart_update.log")
+
+
+def _get_smart_ota_job(slug: str) -> Optional[dict]:
+    """Return the running job dict for slug, or None if none / already finished."""
+    job = _smart_ota_jobs.get(slug)
+    if not job:
+        return None
+    proc = job.get("proc")
+    if proc and proc.poll() is None:
+        return job
+    _cleanup_smart_ota_job(slug)
+    return None
+
+
+def _cleanup_smart_ota_job(slug: str):
+    job = _smart_ota_jobs.pop(slug, None)
+    if job:
+        tmp = job.get("tmp_config")
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+
 def discover_devices_cached(instance: Dict) -> List[Dict]:
     """Cached wrapper for discover_devices — re-reads YAMLs at most every 30s"""
     slug = instance["slug"]
@@ -1048,12 +1076,14 @@ def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run:
 
     # Instance overrides — strip keys that start with _ (documentation-only)
     base = {k: v for k, v in base.items() if not k.startswith("_")}
+    slug = instance_config["slug"]
     base.update({
         "mode": "docker",
         "esphome_config_dir": instance_config["config_dir"],
         "esphome_container": instance_config["container"],
-        "state_dir": f"/var/lib/esphome-updater-{instance_config['slug']}",
-        "log_dir": "/var/log/esphome-updater",
+        "state_dir": f"/var/lib/esphome-updater-{slug}",
+        # Per-instance log dir so production and lab don't share a log file
+        "log_dir": str(_smart_ota_log_file(slug).parent),
         "dry_run": dry_run,
         "skip_offline": base.get("skip_offline", True),
         "delay_between_updates": base.get("delay_between_updates", 3),
@@ -1079,36 +1109,76 @@ def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run:
 class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
     """
     WebSocket: runs the standalone esphome-updater script and streams its output.
-    Used by the Smart Update feature for full fleet updates with resume/skip support.
+
+    The updater is spawned as a detached background process (start_new_session=True)
+    writing stdout to a per-instance log file.  The WebSocket tails that file.
+    Closing the browser / lid does NOT kill the updater — the user can reconnect
+    and pick up the live log from where they left off.
+
+    Message types in:
+      spawn     — start a new job (fails if one is already running)
+      reconnect — attach to a running job's log stream
+      status    — check whether a job is running; returns status message
+      stop      — terminate the running job
+
+    Message types out:
+      status    — {running, started, scope, dry_run}
+      line      — one line of updater output
+      exit      — {code} when job finishes
+      error     — error string
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._proc = None
-        self._tmp_config: Optional[str] = None
+        self._instance_slug: Optional[str] = None
+        self._tailing = False
 
     async def on_message(self, message):
         try:
             data = json.loads(message)
-            if data.get("type") == "spawn":
+            msg_type = data.get("type")
+            if msg_type == "status":
+                await self.handle_status(data)
+            elif msg_type == "spawn":
                 await self.handle_run(data)
-            elif data.get("type") == "stop":
-                if self._proc and self._proc.returncode is None:
-                    self._proc.proc.kill()
+            elif msg_type == "reconnect":
+                await self.handle_reconnect(data)
+            elif msg_type == "stop":
+                await self.handle_stop(data)
         except Exception as e:
             await self.write_message(json.dumps({"type": "error", "data": str(e)}))
 
+    async def handle_status(self, data):
+        slug = data.get("instance")
+        job = _get_smart_ota_job(slug)
+        if job:
+            await self.write_message(json.dumps({
+                "type": "status",
+                "running": True,
+                "started": job.get("started"),
+                "scope": job.get("scope"),
+                "dry_run": job.get("dry_run"),
+                "instance": slug,
+            }))
+        else:
+            await self.write_message(json.dumps({"type": "status", "running": False}))
+
     async def handle_run(self, data):
-        if self._proc is not None:
+        slug = data.get("instance")
+
+        if _get_smart_ota_job(slug):
+            await self.write_message(json.dumps({
+                "type": "error",
+                "data": "A Smart OTA job is already running for this instance. Use Reconnect to follow it."
+            }))
             return
 
-        instance_slug = data.get("instance")
         devices = data.get("devices", [])
         dry_run = data.get("dry_run", False)
 
-        instance_config = get_instance_config(instance_slug)
+        instance_config = get_instance_config(slug)
         if not instance_config:
-            await self.write_message(json.dumps({"type": "error", "data": f"Instance {instance_slug} not found"}))
+            await self.write_message(json.dumps({"type": "error", "data": f"Instance {slug} not found"}))
             return
 
         updater_cfg = CONFIG.get("updater", {})
@@ -1120,55 +1190,132 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
             }))
             return
 
-        self._tmp_config = _build_standalone_config(instance_config, devices, dry_run)
+        tmp_config = _build_standalone_config(instance_config, devices, dry_run)
+        log_file = _smart_ota_log_file(slug)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
-        mode = "DRY RUN" if dry_run else "LIVE"
         scope = f"{len(devices)} selected devices" if devices else "all devices"
-        await self.write_message(json.dumps({
-            "type": "line",
-            "data": f"=== Smart OTA Update — {instance_config['name']} — {scope} [{mode}] ==="
-        }))
+        mode = "DRY RUN" if dry_run else "LIVE"
 
-        cmd = [sys.executable, script_path, "--config", self._tmp_config]
+        import datetime
         try:
-            self._proc = tornado.process.Subprocess(
-                cmd,
-                stdout=tornado.process.Subprocess.STREAM,
-                stderr=subprocess.STDOUT
+            log_file.write_text("")  # truncate for new run
+            with open(str(log_file), "a") as lf:
+                proc = subprocess.Popen(
+                    [sys.executable, script_path, "--config", tmp_config],
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,  # detach — survives WS/browser close
+                )
+
+            _smart_ota_jobs[slug] = {
+                "proc": proc,
+                "log_file": str(log_file),
+                "tmp_config": tmp_config,
+                "started": datetime.datetime.now().isoformat(timespec="seconds"),
+                "scope": scope,
+                "dry_run": dry_run,
+            }
+            self._instance_slug = slug
+
+            await self.write_message(json.dumps({
+                "type": "line",
+                "data": f"=== Smart OTA Update — {instance_config['name']} — {scope} [{mode}] ==="
+            }))
+            await self.write_message(json.dumps({
+                "type": "line",
+                "data": "Running in background — safe to close browser or lid"
+            }))
+            tornado.ioloop.IOLoop.current().spawn_callback(
+                self._tail_log, str(log_file), slug
             )
-            tornado.ioloop.IOLoop.current().spawn_callback(self._stream_output)
         except Exception as e:
+            Path(tmp_config).unlink(missing_ok=True)
             await self.write_message(json.dumps({"type": "error", "data": str(e)}))
 
-    @tornado.gen.coroutine
-    def _stream_output(self):
-        try:
-            while True:
-                try:
-                    line = yield self._proc.stdout.read_until_regex(b"[\n\r]")
-                    text = line.decode("utf-8", "replace").rstrip()
-                    self.write_message(json.dumps({"type": "line", "data": text}))
-                except tornado.iostream.StreamClosedError:
-                    break
-                except Exception:
-                    break
+    async def handle_reconnect(self, data):
+        slug = data.get("instance")
+        job = _get_smart_ota_job(slug)
+        if not job:
+            await self.write_message(json.dumps({
+                "type": "error",
+                "data": "No running job found — it may have finished while you were away."
+            }))
+            await self.write_message(json.dumps({"type": "exit", "code": 0}))
+            return
 
-            yield self._proc.wait_for_exit(raise_error=False)
-            self.write_message(json.dumps({"type": "exit", "code": self._proc.returncode}))
+        self._instance_slug = slug
+        await self.write_message(json.dumps({
+            "type": "line",
+            "data": f"=== Reconnected to running Smart OTA — {job['scope']} (started {job['started']}) ==="
+        }))
+        tornado.ioloop.IOLoop.current().spawn_callback(
+            self._tail_log, job["log_file"], slug
+        )
+
+    async def handle_stop(self, data):
+        slug = data.get("instance") or self._instance_slug
+        job = _get_smart_ota_job(slug)
+        if job:
+            proc = job.get("proc")
+            if proc and proc.poll() is None:
+                proc.terminate()
+                await self.write_message(json.dumps({
+                    "type": "line",
+                    "data": "⚠ Stop requested — terminating updater..."
+                }))
+        else:
+            await self.write_message(json.dumps({
+                "type": "line", "data": "No running job to stop."
+            }))
+
+    @tornado.gen.coroutine
+    def _tail_log(self, log_file: str, slug: str):
+        """Poll the log file and stream new lines to this WebSocket.
+        Returns when the process exits OR the WebSocket closes (without killing the process)."""
+        self._tailing = True
+        try:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                while True:
+                    line = f.readline()
+                    if line:
+                        try:
+                            self.write_message(json.dumps({"type": "line", "data": line.rstrip()}))
+                        except tornado.websocket.WebSocketClosedError:
+                            return  # Browser closed — process keeps running
+                    else:
+                        job = _smart_ota_jobs.get(slug)
+                        if not job:
+                            break
+                        proc = job.get("proc")
+                        if proc and proc.poll() is not None:
+                            # Process just finished — drain any remaining output
+                            remaining = f.read()
+                            for l in remaining.splitlines():
+                                try:
+                                    self.write_message(json.dumps({"type": "line", "data": l}))
+                                except tornado.websocket.WebSocketClosedError:
+                                    return
+                            rc = proc.returncode
+                            _cleanup_smart_ota_job(slug)
+                            try:
+                                self.write_message(json.dumps({"type": "exit", "code": rc}))
+                            except tornado.websocket.WebSocketClosedError:
+                                pass
+                            return
+                        yield tornado.gen.sleep(0.25)
         except tornado.websocket.WebSocketClosedError:
-            if self._proc and self._proc.returncode is None:
-                self._proc.proc.kill()
+            pass  # Client left — process keeps running, can reconnect later
         except Exception as e:
             try:
                 self.write_message(json.dumps({"type": "error", "data": str(e)}))
             except Exception:
                 pass
+        finally:
+            self._tailing = False
 
     def on_close(self):
-        if self._proc and self._proc.returncode is None:
-            self._proc.proc.kill()
-        if self._tmp_config:
-            Path(self._tmp_config).unlink(missing_ok=True)
+        # Do NOT kill the process — it runs independently of the WebSocket session
         super().on_close()
 
 

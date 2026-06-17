@@ -1658,10 +1658,25 @@
                 <button @click="closeSmartOTA()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
             </div>
 
-            <!-- Options row -->
-            <div class="px-6 py-4 border-b bg-gray-50 flex items-center gap-6 flex-wrap">
+            <!-- Job-in-progress banner -->
+            <div x-show="smartOTA.jobRunning && !smartOTA.running"
+                 class="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-4">
+                <div class="text-sm text-amber-800">
+                    <span class="font-semibold">⚡ Update running in background</span>
+                    <span x-show="smartOTA.jobScope" class="ml-1">— <span x-text="smartOTA.jobScope"></span></span>
+                    <span x-show="smartOTA.jobStarted" class="ml-1 text-amber-600">started <span x-text="smartOTA.jobStarted"></span></span>
+                </div>
+                <button @click="reconnectSmartOTA()"
+                        class="px-4 py-1.5 bg-amber-600 text-white text-sm rounded-lg hover:bg-amber-700 transition whitespace-nowrap">
+                    🔌 Reconnect
+                </button>
+            </div>
+
+            <!-- Options row (hidden while reconnected/running) -->
+            <div x-show="!smartOTA.running"
+                 class="px-6 py-4 border-b bg-gray-50 flex items-center gap-6 flex-wrap">
                 <label class="flex items-center gap-2 text-sm">
-                    <input type="checkbox" x-model="smartOTA.dryRun" :disabled="smartOTA.running"
+                    <input type="checkbox" x-model="smartOTA.dryRun" :disabled="smartOTA.jobRunning"
                            class="rounded border-gray-300 text-indigo-600">
                     <span class="font-medium text-gray-700">Dry run</span>
                     <span class="text-gray-400">(no actual flashing)</span>
@@ -1680,7 +1695,7 @@
             <!-- Output -->
             <div class="flex-1 overflow-auto p-4 bg-gray-900 font-mono text-xs text-green-300 min-h-64"
                  x-ref="smartOTAOutput">
-                <pre x-text="smartOTA.output || 'Press Start to begin…'"></pre>
+                <pre x-text="smartOTA.output || (smartOTA.jobRunning ? 'Job running in background — click Reconnect to follow output…' : 'Press Start to begin…')"></pre>
             </div>
 
             <!-- Footer -->
@@ -1688,13 +1703,14 @@
                 <div class="text-sm text-gray-500">
                     <span x-show="smartOTA.running" class="flex items-center gap-2">
                         <span class="inline-block w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                        Running…
+                        Running — safe to close this window
                     </span>
-                    <span x-show="!smartOTA.running && smartOTA.output">Finished</span>
+                    <span x-show="!smartOTA.running && smartOTA.output && !smartOTA.jobRunning">Finished</span>
                 </div>
                 <div class="flex gap-3">
                     <button @click="startSmartOTA()"
-                            :disabled="smartOTA.running"
+                            :disabled="smartOTA.running || smartOTA.jobRunning"
+                            x-show="!smartOTA.running"
                             class="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-40 transition">
                         ▶ Start
                     </button>
@@ -1989,7 +2005,8 @@
                 // ── Smart OTA state ─────────────────────────────────────
                 smartOTA: {
                     show: false, instance: null, dryRun: true, useSelected: false,
-                    output: '', running: false, ws: null
+                    output: '', running: false, ws: null,
+                    jobRunning: false, jobStarted: null, jobScope: null, jobDryRun: false
                 },
 
                 // ── Toast notifications ──────────────────────────────────
@@ -3007,32 +3024,43 @@
                         useSelected,
                         output: '',
                         running: false,
-                        ws: null
+                        ws: null,
+                        jobRunning: false, jobStarted: null, jobScope: null, jobDryRun: false
                     };
+                    this.checkSmartOTAStatus();
                 },
 
-                startSmartOTA() {
-                    if (this.smartOTA.running) return;
+                checkSmartOTAStatus() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/standalone-ota`);
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({ type: 'status', instance: this.smartOTA.instance }));
+                    };
+                    ws.onmessage = (event) => {
+                        let msg;
+                        try { msg = JSON.parse(event.data); } catch (e) { return; }
+                        if (msg.type === 'status') {
+                            this.smartOTA.jobRunning = msg.running;
+                            this.smartOTA.jobStarted = msg.started || null;
+                            this.smartOTA.jobScope = msg.scope || null;
+                            this.smartOTA.jobDryRun = msg.dry_run || false;
+                        }
+                        ws.close();
+                    };
+                    ws.onerror = () => ws.close();
+                },
 
-                    // selectedDevices holds name strings; look up full device objects
-                    const devices = this.smartOTA.useSelected
-                        ? this.devices
-                            .filter(d => this.selectedDevices.includes(d.name))
-                            .map(d => d.yaml_filename || d.name)
-                        : [];
-
+                _connectSmartOTAWS(msgType, extraPayload = {}) {
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/standalone-ota`);
                     this.smartOTA.ws = ws;
                     this.smartOTA.running = true;
-                    this.smartOTA.output = '';
 
                     ws.onopen = () => {
                         ws.send(JSON.stringify({
-                            type: 'spawn',
+                            type: msgType,
                             instance: this.smartOTA.instance,
-                            devices,
-                            dry_run: this.smartOTA.dryRun
+                            ...extraPayload
                         }));
                     };
 
@@ -3041,12 +3069,19 @@
                         try { msg = JSON.parse(event.data); } catch (e) { return; }
                         if (msg.type === 'line') {
                             this.smartOTA.output += msg.data + '\n';
+                            this.$nextTick(() => {
+                                const el = this.$refs.smartOTAOutput;
+                                if (el) el.scrollTop = el.scrollHeight;
+                            });
                         } else if (msg.type === 'exit') {
                             ws.close();
                             this.smartOTA.ws = null;
                             this.smartOTA.running = false;
+                            this.smartOTA.jobRunning = false;
                             const ok = msg.code === 0;
-                            this.smartOTA.output += ok ? '\n\n✅ Smart OTA completed successfully.' : `\n\n❌ Exited with code ${msg.code}.`;
+                            this.smartOTA.output += ok
+                                ? '\n\n✅ Smart OTA completed successfully.'
+                                : `\n\n❌ Exited with code ${msg.code}.`;
                             this.toast(ok ? 'Smart OTA finished' : 'Smart OTA failed', ok ? 'success' : 'error');
                             if (ok) this.refreshDevices();
                         } else if (msg.type === 'error') {
@@ -3061,20 +3096,51 @@
                         this.smartOTA.running = false;
                         this.smartOTA.ws = null;
                     };
+
+                    // Browser close / lid close — WS drops but process keeps running
+                    ws.onclose = () => {
+                        if (this.smartOTA.running) {
+                            this.smartOTA.running = false;
+                            this.smartOTA.ws = null;
+                            this.smartOTA.jobRunning = true;
+                        }
+                    };
+                },
+
+                startSmartOTA() {
+                    if (this.smartOTA.running) return;
+                    const devices = this.smartOTA.useSelected
+                        ? this.devices
+                            .filter(d => this.selectedDevices.includes(d.name))
+                            .map(d => d.yaml_filename || d.name)
+                        : [];
+                    this.smartOTA.output = '';
+                    this._connectSmartOTAWS('spawn', { devices, dry_run: this.smartOTA.dryRun });
+                },
+
+                reconnectSmartOTA() {
+                    this.smartOTA.output = '';
+                    this._connectSmartOTAWS('reconnect');
                 },
 
                 stopSmartOTA() {
                     if (this.smartOTA.ws) {
-                        this.smartOTA.ws.send(JSON.stringify({ type: 'stop' }));
-                        this.smartOTA.ws.close();
-                        this.smartOTA.ws = null;
+                        this.smartOTA.ws.send(JSON.stringify({
+                            type: 'stop',
+                            instance: this.smartOTA.instance
+                        }));
+                        // Keep WS open to receive the final exit message
                     }
-                    this.smartOTA.running = false;
                 },
 
                 closeSmartOTA() {
-                    this.stopSmartOTA();
+                    // Close the WebSocket stream but leave the background process running
+                    if (this.smartOTA.ws) {
+                        this.smartOTA.ws.close();
+                        this.smartOTA.ws = null;
+                    }
                     this.smartOTA.show = false;
+                    this.smartOTA.running = false;
                 },
 
                 // ── Campaign methods ─────────────────────────────────────

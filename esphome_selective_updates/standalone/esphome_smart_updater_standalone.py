@@ -73,9 +73,14 @@ def ts() -> str:
     return datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
 
 def log(msg: str):
-    """Log message to both stdout and file"""
+    """Log message to stdout and optionally to file.
+    When the web UI spawns us with stdout redirected to the log file
+    (ESPHOME_LOG_STDOUT_ONLY=1), we skip the explicit file write to
+    avoid every line appearing twice in the log."""
     line = f"{ts()} {msg}"
     print(line, flush=True)
+    if os.environ.get("ESPHOME_LOG_STDOUT_ONLY") == "1":
+        return
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with LOG_FILE.open("a", encoding="utf-8") as f:
@@ -368,10 +373,11 @@ def container_exists(container: str) -> bool:
         return False
 
 def get_current_esphome_version(container: str) -> str:
-    """Get ESPHome version from container"""
+    """Get ESPHome version from container.
+    Handles both 'ESPHome 2026.5.3' and 'Version: 2026.5.3' output formats."""
     rc, out = docker_exec(container, ["esphome", "version"], capture=True)
     if rc == 0:
-        m = re.search(r"ESPHome\s+([0-9][^\s]*)", out)
+        m = re.search(r"(?:ESPHome\s+|Version:\s*)([0-9][^\s]*)", out)
         if m:
             return m.group(1).strip()
     return "unknown"

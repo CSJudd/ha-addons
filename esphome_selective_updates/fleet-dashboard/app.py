@@ -1211,11 +1211,16 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
         import datetime
         try:
             log_file.write_text("")  # truncate for new run
+            env = os.environ.copy()
+            # Stdout is redirected to the log file; tell the script not to
+            # also write to it by path or every line appears twice.
+            env["ESPHOME_LOG_STDOUT_ONLY"] = "1"
             with open(str(log_file), "a") as lf:
                 proc = subprocess.Popen(
                     [sys.executable, script_path, "--config", tmp_config],
                     stdout=lf,
                     stderr=subprocess.STDOUT,
+                    env=env,
                     start_new_session=True,  # detach — survives WS/browser close
                 )
 

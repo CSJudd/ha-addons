@@ -1285,6 +1285,8 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
                 "type": "line", "data": "No running job to stop."
             }))
 
+    _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b.")
+
     @tornado.gen.coroutine
     def _tail_log(self, log_file: str, slug: str):
         """Poll the log file and stream new lines to this WebSocket.
@@ -1295,8 +1297,9 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
                 while True:
                     line = f.readline()
                     if line:
+                        clean = self._ANSI_RE.sub("", line).rstrip()
                         try:
-                            self.write_message(json.dumps({"type": "line", "data": line.rstrip()}))
+                            self.write_message(json.dumps({"type": "line", "data": clean}))
                         except tornado.websocket.WebSocketClosedError:
                             return  # Browser closed — process keeps running
                     else:
@@ -1309,7 +1312,7 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
                             remaining = f.read()
                             for l in remaining.splitlines():
                                 try:
-                                    self.write_message(json.dumps({"type": "line", "data": l}))
+                                    self.write_message(json.dumps({"type": "line", "data": self._ANSI_RE.sub("", l)}))
                                 except tornado.websocket.WebSocketClosedError:
                                     return
                             rc = proc.returncode

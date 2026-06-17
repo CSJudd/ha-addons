@@ -1672,23 +1672,55 @@
                 </button>
             </div>
 
-            <!-- Options row (hidden while reconnected/running) -->
-            <div x-show="!smartOTA.running"
-                 class="px-6 py-4 border-b bg-gray-50 flex items-center gap-6 flex-wrap">
-                <label class="flex items-center gap-2 text-sm">
-                    <input type="checkbox" x-model="smartOTA.dryRun" :disabled="smartOTA.jobRunning"
-                           class="rounded border-gray-300 text-indigo-600">
-                    <span class="font-medium text-gray-700">Dry run</span>
-                    <span class="text-gray-400">(no actual flashing)</span>
-                </label>
-                <div class="text-sm text-gray-500">
-                    <span x-show="smartOTA.useSelected">
-                        Devices: <strong x-text="selectedDevices.length"></strong> selected
-                    </span>
-                    <span x-show="!smartOTA.useSelected">
-                        Devices: <strong>all</strong> in
-                        <span x-text="smartOTA.instance" class="font-mono"></span>
-                    </span>
+            <!-- Settings (hidden while running) -->
+            <div x-show="!smartOTA.running" class="px-6 py-4 border-b bg-gray-50">
+                <!-- Row 1: scope + dry run + skip offline -->
+                <div class="flex items-center gap-6 flex-wrap mb-3">
+                    <div class="text-sm text-gray-600 font-medium">
+                        <span x-show="smartOTA.useSelected">
+                            📋 <strong x-text="selectedDevices.length"></strong> selected devices
+                        </span>
+                        <span x-show="!smartOTA.useSelected">
+                            📋 All devices in <span x-text="smartOTA.instance" class="font-mono font-semibold"></span>
+                        </span>
+                    </div>
+                    <label class="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" x-model="smartOTA.dryRun" :disabled="smartOTA.jobRunning"
+                               class="rounded border-gray-300 text-indigo-600">
+                        <span class="font-medium text-gray-700">Dry run</span>
+                        <span class="text-gray-400 text-xs">(no flashing)</span>
+                    </label>
+                    <label class="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" x-model="smartOTA.skipOffline" :disabled="smartOTA.jobRunning"
+                               class="rounded border-gray-300 text-indigo-600">
+                        <span class="font-medium text-gray-700">Skip offline</span>
+                        <span class="text-gray-400 text-xs">(ping check)</span>
+                    </label>
+                </div>
+                <!-- Row 2: start from + max devices + delay -->
+                <div class="flex items-center gap-4 flex-wrap">
+                    <div class="flex items-center gap-2 text-sm">
+                        <label class="text-gray-600 whitespace-nowrap">Start from device:</label>
+                        <input type="text" x-model="smartOTA.startFrom"
+                               :disabled="smartOTA.jobRunning"
+                               placeholder="(first)"
+                               class="border border-gray-300 rounded px-2 py-1 text-xs font-mono w-36 disabled:bg-gray-100">
+                    </div>
+                    <div class="flex items-center gap-2 text-sm">
+                        <label class="text-gray-600 whitespace-nowrap">Max devices:</label>
+                        <input type="number" x-model.number="smartOTA.maxDevices"
+                               :disabled="smartOTA.jobRunning"
+                               min="0" placeholder="0=all"
+                               class="border border-gray-300 rounded px-2 py-1 text-xs w-20 disabled:bg-gray-100">
+                        <span class="text-gray-400 text-xs">0 = all</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-sm">
+                        <label class="text-gray-600 whitespace-nowrap">Delay (s):</label>
+                        <input type="number" x-model.number="smartOTA.delay"
+                               :disabled="smartOTA.jobRunning"
+                               min="0" max="60"
+                               class="border border-gray-300 rounded px-2 py-1 text-xs w-16 disabled:bg-gray-100">
+                    </div>
                 </div>
             </div>
 
@@ -2004,9 +2036,10 @@
 
                 // ── Smart OTA state ─────────────────────────────────────
                 smartOTA: {
-                    show: false, instance: null, dryRun: true, useSelected: false,
+                    show: false, instance: null, dryRun: false, useSelected: false,
                     output: '', running: false, ws: null,
-                    jobRunning: false, jobStarted: null, jobScope: null, jobDryRun: false
+                    jobRunning: false, jobStarted: null, jobScope: null, jobDryRun: false,
+                    skipOffline: true, delay: 3, startFrom: '', maxDevices: 0
                 },
 
                 // ── Toast notifications ──────────────────────────────────
@@ -3020,12 +3053,13 @@
                     this.smartOTA = {
                         show: true,
                         instance: this.currentInstance,
-                        dryRun: true,
+                        dryRun: false,
                         useSelected,
                         output: '',
                         running: false,
                         ws: null,
-                        jobRunning: false, jobStarted: null, jobScope: null, jobDryRun: false
+                        jobRunning: false, jobStarted: null, jobScope: null, jobDryRun: false,
+                        skipOffline: true, delay: 3, startFrom: '', maxDevices: 0
                     };
                     this.checkSmartOTAStatus();
                 },
@@ -3115,7 +3149,14 @@
                             .map(d => d.yaml_filename || d.name)
                         : [];
                     this.smartOTA.output = '';
-                    this._connectSmartOTAWS('spawn', { devices, dry_run: this.smartOTA.dryRun });
+                    this._connectSmartOTAWS('spawn', {
+                        devices,
+                        dry_run: this.smartOTA.dryRun,
+                        skip_offline: this.smartOTA.skipOffline,
+                        delay: this.smartOTA.delay,
+                        start_from: this.smartOTA.startFrom,
+                        max_devices: this.smartOTA.maxDevices
+                    });
                 },
 
                 reconnectSmartOTA() {

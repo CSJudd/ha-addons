@@ -62,6 +62,7 @@ DEFAULTS = {
 
 STOP_REQUESTED = False
 CURRENT_CHILD: Optional[subprocess.Popen] = None
+CONTAINER_ESPHOME_VERSION: Optional[str] = None  # set during startup
 
 # ============================================================================
 # LOGGING UTILITIES
@@ -379,39 +380,47 @@ def get_current_esphome_version(container: str) -> str:
 # VERSION TRACKING
 # ============================================================================
 
-def read_dashboard_versions(device_name: str) -> Tuple[Optional[str], Optional[str]]:
-    """Read deployed and current versions from ESPHome dashboard.json"""
-    if not DASHBOARD_JSON.exists():
-        return (None, None)
-    
-    try:
-        dashboard = json.loads(DASHBOARD_JSON.read_text(encoding="utf-8"))
-        device_info = dashboard.get(device_name, {})
-        deployed = device_info.get("deployed_version")
-        current = device_info.get("current_version")
-        return (deployed, current)
-    except Exception:
-        return (None, None)
-
-def needs_update(device_name: str, progress: Dict) -> Tuple[bool, str]:
+def read_device_compiled_version(yaml_filename: str) -> Optional[str]:
     """
-    Determine if device needs update
+    Read the ESPHome version last used to compile this device.
+    Reads from .esphome/storage/{yaml_filename}.json on the host filesystem
+    (same directory that ESPHome mounts as /config inside the container).
+    Returns None if the storage file doesn't exist (never compiled).
+    """
+    storage_path = ESPHOME_CONFIG_DIR / ".esphome" / "storage" / f"{yaml_filename}.json"
+    if not storage_path.exists():
+        return None
+    try:
+        data = json.loads(storage_path.read_text(encoding="utf-8"))
+        return data.get("esphome_version")
+    except Exception:
+        return None
+
+
+def needs_update(yaml_filename: str, device_name: str, progress: Dict) -> Tuple[bool, str]:
+    """
+    Determine if device needs update by comparing the version last compiled
+    for this device against the current ESPHome container version.
     Returns: (needs_update, reason)
     """
+    global CONTAINER_ESPHOME_VERSION
+
     # Already done this run
     if device_name in progress.get("done", []):
         return (False, "already updated this run")
-    
-    # Read versions from dashboard
-    deployed, current = read_dashboard_versions(device_name)
-    
-    if deployed is None or current is None:
-        return (True, "version information unavailable")
-    
-    if deployed != current:
-        return (True, f"deployed={deployed}, current={current}")
-    
-    return (False, f"already up-to-date ({deployed})")
+
+    deployed = read_device_compiled_version(yaml_filename)
+
+    if deployed is None:
+        return (True, "never compiled — no storage record")
+
+    if not CONTAINER_ESPHOME_VERSION or CONTAINER_ESPHOME_VERSION == "unknown":
+        return (True, "container version unknown — updating to be safe")
+
+    if deployed == CONTAINER_ESPHOME_VERSION:
+        return (False, f"already on {deployed}")
+
+    return (True, f"deployed={deployed}, container={CONTAINER_ESPHOME_VERSION}")
 
 # ============================================================================
 # COMPILATION
@@ -592,14 +601,16 @@ def verify_esphome_container(container: str) -> bool:
         return False
     
     log(f"✓ ESPHome container found: {container}")
-    
-    # Try to get ESPHome version
+
+    # Get and cache the container's ESPHome version — used by needs_update()
+    global CONTAINER_ESPHOME_VERSION
     version = get_current_esphome_version(container)
+    CONTAINER_ESPHOME_VERSION = version
     if version != "unknown":
-        log(f"✓ ESPHome version: {version}")
+        log(f"✓ ESPHome container version: {version}")
     else:
-        log("⚠ Could not determine ESPHome version")
-    
+        log("⚠ Could not determine ESPHome version — all devices will be treated as needing update")
+
     return True
 
 def verify_esphome_config_dir() -> bool:
@@ -742,20 +753,21 @@ def filter_devices(
     filtered = []
     for dev in devices:
         name = dev["name"]
-        
+        yaml_filename = dev["config"]
+
         # Skip already processed
         if name in progress.get("done", []):
             skip_reasons[name] = "already updated this run"
             continue
-        
+
         # Check if update needed
-        needs, reason = needs_update(name, progress)
+        needs, reason = needs_update(yaml_filename, name, progress)
         if not needs:
             skip_reasons[name] = reason
             continue
-        
+
         filtered.append(dev)
-    
+
     return (filtered, skip_reasons)
 
 # ============================================================================
@@ -781,10 +793,10 @@ def update_device(
     skip_offline = opts.get("skip_offline", True)
     
     log(f"Config: {yaml_name}")
-    
+
     # Show version info
-    deployed, current = read_dashboard_versions(name)
-    log(f"Versions: deployed={deployed or 'unknown'}, current={current or 'unknown'}")
+    deployed = read_device_compiled_version(yaml_name)
+    log(f"Versions: compiled={deployed or 'unknown'}, container={CONTAINER_ESPHOME_VERSION or 'unknown'}")
     
     # Determine target
     target = ip if ip else f"{node}.local"

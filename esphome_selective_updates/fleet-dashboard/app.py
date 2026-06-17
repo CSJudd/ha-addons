@@ -1059,7 +1059,9 @@ class LogsWebSocketHandler(BaseWebSocketHandler):
 # STANDALONE OTA WEBSOCKET HANDLER
 # ============================================================================
 
-def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run: bool) -> str:
+def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run: bool,
+                             skip_offline: bool = True, delay: int = 3,
+                             start_from: str = "", max_devices: int = 0) -> str:
     """
     Build a temporary config file for the standalone updater, merging the
     config_template with instance-specific overrides. Returns path to temp file.
@@ -1085,13 +1087,14 @@ def _build_standalone_config(instance_config: Dict, devices: List[str], dry_run:
         # Per-instance log dir so production and lab don't share a log file
         "log_dir": str(_smart_ota_log_file(slug).parent),
         "dry_run": dry_run,
-        "skip_offline": base.get("skip_offline", True),
-        "delay_between_updates": base.get("delay_between_updates", 3),
+        "skip_offline": skip_offline,
+        "delay_between_updates": delay,
+        "start_from_device": start_from,
         # Always start fresh from the web UI — stale "done" lists from
         # previous runs would otherwise silently skip devices.
         "clear_progress_on_start": True,
-        # Always override template cap — web UI controls scope explicitly
-        "max_devices_per_run": 0,
+        # Explicit per-call cap; 0 = no cap
+        "max_devices_per_run": max_devices,
     })
     if devices:
         base["update_only_these"] = devices
@@ -1175,6 +1178,10 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
 
         devices = data.get("devices", [])
         dry_run = data.get("dry_run", False)
+        skip_offline = data.get("skip_offline", True)
+        delay = int(data.get("delay", 3))
+        start_from = data.get("start_from", "").strip()
+        max_devices = int(data.get("max_devices", 0))
 
         instance_config = get_instance_config(slug)
         if not instance_config:
@@ -1190,7 +1197,11 @@ class StandaloneOTAWebSocketHandler(BaseWebSocketHandler):
             }))
             return
 
-        tmp_config = _build_standalone_config(instance_config, devices, dry_run)
+        tmp_config = _build_standalone_config(
+            instance_config, devices, dry_run,
+            skip_offline=skip_offline, delay=delay,
+            start_from=start_from, max_devices=max_devices
+        )
         log_file = _smart_ota_log_file(slug)
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
